@@ -13,7 +13,13 @@ dependencies = [
     "pandas-stubs>=2.2.3.250308",
     "polygon-api-client>=1.14.5",
     "pyarrow>=20.0.0",
+    "python-dotenv>=1.1.0",
     "scikit-learn>=1.6.1",
     "streamlit>=1.45.0",
     "tqdm>=4.67.1",
 ]
+
+
+[tool.setuptools]
+packages = ["trader"]
+package-dir = { "" = "src" }
