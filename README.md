@@ -1,87 +1,68 @@
-# BlackBox: Modular Backtesting Framework for Algorithmic Trading
+# **BlackBox: Modular Backtesting Engine for Quantitative Trading**
 
-**BlackBox** is a modular, research-grade backtesting engine designed for developing, evaluating, and deploying multi-asset trading strategies. It supports the full lifecycle from alpha modeling to execution simulation with extensible interfaces and realistic market conditions.
+**BlackBox** is a research-grade, extensible backtesting framework for building, testing, and evaluating multi-asset algorithmic trading strategies. It’s designed to simulate realistic market conditions, support modular model pipelines, and scale from lightweight experiments to full portfolio simulations.
 
-## Features
+---
 
-* 🔌 **Pluggable Models**: Modular architecture for alpha, risk, transaction cost, portfolio, execution, and slippage models
-* 🧠 **Multi-symbol Support**: Runs unified capital allocation across hundreds or thousands of assets
-* 📈 **Realistic Execution**: Slippage and transaction cost simulation for institutional-grade realism
-* 📊 **Performance Metrics**: Computes Sharpe, drawdown, volatility, CAGR, PnL, win rate, and execution stats
-* 💾 **Hive-style Parquet Ingestion**: Efficient loading of minute-level data from local files using DuckDB
-* ⚙️ **Backtest Configs**: Declarative configuration for backtest parameters and model tuning
-* 📦 **Built for Scale**: Designed to grow from small experiments to portfolio-level optimization
+## 🚀 Key Features
 
-## Project Structure
+* 🔌 **Modular Architecture** — Plug-and-play support for custom alpha, risk, cost, slippage, execution, and portfolio models
+* 📚 **Unified Multi-Symbol Simulation** — Allocate capital across thousands of assets in a single run
+* ⚖️ **Realistic Execution & Costs** — Slippage and transaction cost models emulate real-world frictions
+* 📊 **Comprehensive Metrics** — Auto-computes Sharpe, CAGR, max drawdown, win rate, turnover, and more
+* 💾 **Efficient Data Access** — Fast Parquet loading using DuckDB and hive-style partitioned datasets
+* ⚙️ **Config-Driven Runs** — Backtests are easily controlled via declarative `BacktestConfig` objects
+* 🧪 **Built for Experimentation** — Log every trade, equity curve, and metric for reproducibility and analysis
+
+---
+
+## 🧱 Project Structure
 
 ```
 blackbox/
-├── src/
-│   └── trader/
-│       ├── backtest/              # Backtest config and engine
-│       │   ├── backtest_config.py
-│       │   └── backtester.py
-│       ├── cli/                   # Entry points and run scripts
-│       │   └── run_backtester.py
-│       ├── core/                  # Interfaces for engine components
-│       │   ├── alpha.py
-│       │   ├── engine.py
-│       │   ├── execution.py
-│       │   ├── portfolio.py
-│       │   ├── risk.py
-│       │   ├── slippage.py
-│       │   └── tx_cost.py
-│       ├── dashboard/             # Dashboard interface (future)
-│       │   └── backtest_dashboard.py
-│       ├── data/                  # Local parquet data clients
-│       │   ├── parquet_data_client.py
-│       │   └── parquet_data_loader.py
-│       ├── models/                # Model implementations
-│       │   ├── alpha/
-│       │   │   ├── momentum.py
-│       │   │   └── mean_reversion.py
-│       │   ├── execution/
-│       │   │   └── simple.py
-│       │   ├── portfolio/
-│       │   │   └── equal_weight.py
-│       │   ├── risk/
-│       │   │   └── ewma.py
-│       │   ├── slippage/
-│       │   │   └── percent.py
-│       │   └── tx_cost/
-│       │       └── fixed.py
-│       └── utils/
-│           ├── metrics.py
-│           └── __init__.py
-├── tests/                         # Unit tests
-├── notebooks/                     # Exploratory analysis
-├── results/                       # Saved output from backtests
+├── src/trader/
+│   ├── backtest/           # Backtest engine and config
+│   ├── cli/                # CLI scripts and entry points
+│   ├── core/               # Abstract model interfaces
+│   ├── data/               # Parquet data loaders (DuckDB)
+│   ├── models/             # Alpha, risk, portfolio, etc.
+│   ├── utils/              # Metrics, schema helpers
+├── universe/               # Symbol universe definitions
+├── results/                # Saved trades, equity, and metrics
+├── notebooks/              # Exploratory notebooks
+├── tests/                  # Unit tests
 ├── README.md
-├── main.py
 ├── pyproject.toml
-└── uv.lock
 ```
 
-## Example Usage
+---
+
+## 🧪 Example: Run a Backtest
 
 ```bash
-python src/trader/cli/run_backtester.py
+python src/trader/cli/run_backtest.py --universe universe/universe.csv
 ```
 
-Or integrate into a script:
+Or call it programmatically:
 
 ```python
 from trader.backtest.backtester import Backtester
 from trader.utils.metrics import calculate_performance
 
 backtester = Backtester(models, config)
-equity_curve = backtester.run(data)
+result_df, equity_curve = backtester.run(data)
 metrics = calculate_performance(equity_curve)
 ```
 
-## Data Format
+After the run:
 
-Parquet files are stored in Hive-style partitions:
+* Trades, equity curve, and metrics are saved to `results/{backtest_id}/`
+
+---
+
+## 📂 Data Format
+
+BlackBox expects Hive-partitioned Parquet data, e.g.:
 
 ```
 data/ohlcv/minute/hive_parquet/
@@ -90,35 +71,49 @@ data/ohlcv/minute/hive_parquet/
         └── part-0.parquet
 ```
 
-Each file should contain columns like `timestamp`, `open`, `high`, `low`, `close`, `volume`, etc.
+Each file should include:
 
-## Metrics
-
-After each run, the system computes and logs:
-
-* Portfolio stats: Sharpe, CAGR, drawdown, volatility
-* Trade stats: PnL, win rate, average trade size
-* Execution stats: average slippage (bps), total slippage, number of fills
-
-## Roadmap
-
-* [x] Alpha + Risk + Cost + Portfolio + Execution model pipeline
-* [x] Hive-partitioned local data pipeline with DuckDB
-* [x] Slippage tracking and execution stats
-* [ ] Paper/live trading interface (e.g., Alpaca adapter)
-* [ ] Streamlit dashboard for visualization
-* [ ] Composite alpha blending and feature engineering
-
-## License
-
-MIT
-
-## Disclaimer
-
-This software is provided for educational and research purposes only. It is not intended for use in live trading without rigorous validation. The authors and contributors take no responsibility for financial losses or decisions made using this software.
+* `timestamp`, `open`, `high`, `low`, `close`, `volume`, etc.
 
 ---
 
-**BlackBox** is built for fast iteration, research reproducibility, and bridging the gap between quant prototypes and production-grade trading systems.
+## 📊 Metrics Tracked
 
-> Trade like a quant, test like a scientist. 🧪📈
+* **Portfolio metrics**: Sharpe, CAGR, volatility, drawdown
+* **Trade metrics**: PnL, win rate, holding period, turnover
+* **Execution metrics**: average slippage, fills, cost per trade
+
+Results are logged to console and saved as:
+
+* `results/{id}/trades.parquet`
+* `results/{id}/equity.parquet`
+* `results/{id}/metrics.json`
+
+---
+
+## 🗺️ Roadmap
+
+* [x] Modular model interfaces
+* [x] Multi-symbol backtesting and capital allocation
+* [x] Execution, slippage, and cost tracking
+* [x] Hive-style parquet loader with DuckDB
+* [ ] Composite alpha blending and risk-adjusted scoring
+* [ ] Streamlit dashboard for live result inspection
+* [ ] Live/paper trading adapter (e.g., Alpaca, Binance)
+
+---
+
+## 📜 License
+
+**MIT**
+
+---
+
+## ⚠️ Disclaimer
+
+This software is provided for educational and research purposes only. It is not intended for live trading without thorough validation and risk controls. The authors assume no responsibility for any financial losses incurred.
+
+---
+
+> **BlackBox** bridges the gap between quant research and production-ready backtesting.
+> *Trade like a quant. Test like a scientist.* 🧪📈
