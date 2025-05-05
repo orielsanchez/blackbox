@@ -1,6 +1,9 @@
 import logging
+from collections import defaultdict
+from typing import Tuple
 
 import pandas as pd
+from tqdm import tqdm
 
 from trader.backtest.backtest_config import BacktestConfig
 from trader.core.engine import ModelBundle
@@ -13,79 +16,204 @@ class Backtester:
         self.models = models
         self.config = config
         self.cash = config.initial_capital
-        self.positions = {}  # symbol -> quantity
+        self.positions = defaultdict(int)  # symbol -> shares
+        self.position_age = defaultdict(int)  # symbol -> days held
         self.history = []
-        self.execution_stats = {}
+        self.daily_metrics = []
 
-    def run(self, data: pd.DataFrame) -> pd.Series:
-        logger.info("Starting unified backtest...")
+    def run(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+        logger.info("Starting backtest...")
         df = data.copy()
+        df["symbol"] = df["symbol"].astype(str)
 
-        if self.config.start_date:
-            df = df[df["timestamp"] >= self.config.start_date]
-        if self.config.end_date:
-            df = df[df["timestamp"] <= self.config.end_date]
+        # === Normalize timestamp column ===
+        if "timestamp" not in df.columns:
+            if "day" in df.columns:
+                df = df.rename(columns={"day": "timestamp"})
+                logger.info("⏱️ Renamed 'day' column to 'timestamp'")
+            else:
+                raise KeyError(
+                    "Input DataFrame must contain a 'timestamp' or 'day' column."
+                )
 
-        df = df.sort_values("timestamp")
-        unique_dates = df["timestamp"].unique()
+        if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-        portfolio_value_series = []
-        all_fills = []
+        if "price" not in df.columns:
+            if "close" in df.columns:
+                df["price"] = df["close"]
+                logger.info("📈 Set 'price' column from 'close'")
+            else:
+                raise ValueError("Missing both 'price' and 'close' columns.")
 
-        for idx, current_date in enumerate(unique_dates):
-            if idx < self.config.warmup_period:
+        df = df.sort_values(["symbol", "timestamp"]).dropna(subset=["price"])
+
+        unique_days = df["timestamp"].dt.floor("D").drop_duplicates().sort_values()
+        if self.config.warmup_period > 0:
+            unique_days = unique_days[self.config.warmup_period :]
+
+        max_equity_so_far = self.cash
+        min_holding_days = 3
+
+        for current_day in tqdm(unique_days, desc="Backtest", unit="day"):
+            tqdm.write(f"📆 Processing {current_day.date()}")
+
+            prev_positions = self.positions.copy()
+
+            daily_df = df[df["timestamp"].dt.floor("D") == current_day]
+            if daily_df.empty:
                 continue
 
-            logger.debug(f"Processing {current_date}")
-            day_data = df[df["timestamp"] == current_date]
+            for current_time in daily_df["timestamp"].drop_duplicates().sort_values():
+                snapshot = daily_df[daily_df["timestamp"] == current_time][
+                    ["symbol", "price", "volume"]
+                ]
 
-            alpha_scores = self.models.alpha.score(day_data)
-            risk_scores = self.models.risk.score(day_data)
-            cost_scores = self.models.tx_cost.score(day_data)
+                window = df[df["timestamp"] < current_time]
 
-            targets = self.models.portfolio.allocate(
-                alpha_scores=alpha_scores,
-                risk_scores=risk_scores,
-                cost_scores=cost_scores,
-                capital=self.cash,
+                alpha_df = self.models.alpha.score(window, current_time)
+                risk_df = self.models.risk.score(window, current_time)
+
+                current_prices = snapshot.set_index("symbol")["price"]
+                portfolio_value = sum(
+                    self.positions[sym] * current_prices.get(sym, 0.0)
+                    for sym in self.positions
+                )
+                total_equity = self.cash + portfolio_value
+                max_equity_so_far = max(max_equity_so_far, total_equity)
+                drawdown = (
+                    (total_equity / max_equity_so_far - 1.0)
+                    if max_equity_so_far
+                    else 0.0
+                )
+
+                self.daily_metrics.append(
+                    {
+                        "timestamp": current_time,
+                        "cash": self.cash,
+                        "portfolio_value": portfolio_value,
+                        "equity": total_equity,
+                        "drawdown": drawdown,
+                    }
+                )
+
+                current_pos_df = pd.DataFrame(
+                    {
+                        "symbol": list(self.positions.keys()),
+                        "shares": list(self.positions.values()),
+                    }
+                )
+                current_pos_df["price"] = (
+                    current_pos_df["symbol"].map(current_prices).fillna(0)
+                )
+
+                tx_df = self.models.tx_cost.estimate(current_pos_df, current_time)
+                slippage_df = self.models.slippage.score(current_pos_df, current_time)
+
+                # === Holding period enforcement ===
+                eligible_symbols = alpha_df["symbol"].unique()
+                eligible_symbols = [
+                    sym
+                    for sym in eligible_symbols
+                    if self.position_age[sym] >= min_holding_days
+                    or self.positions[sym] == 0
+                ]
+                alpha_df = alpha_df[alpha_df["symbol"].isin(eligible_symbols)]
+
+                targets = self.models.portfolio.allocate(
+                    alpha_df=alpha_df,
+                    risk_df=risk_df,
+                    tx_df=tx_df,
+                    slippage_df=slippage_df,
+                    price_df=snapshot,
+                    capital=total_equity,
+                )
+
+                if targets.empty:
+                    tqdm.write("⚠️  No targets generated.")
+                    continue
+
+                trades = []
+                for _, row in targets.iterrows():
+                    symbol = row["symbol"]
+                    target_shares = row["shares"]
+                    current_shares = self.positions.get(symbol, 0)
+                    delta = target_shares - current_shares
+                    if delta != 0:
+                        trades.append(
+                            {
+                                "symbol": symbol,
+                                "shares": abs(delta),
+                                "side": "buy" if delta > 0 else "sell",
+                            }
+                        )
+
+                if not trades:
+                    tqdm.write("➖ No change in portfolio today.")
+                    continue
+
+                orders_df = pd.DataFrame(trades)
+                fills = self.models.execution.execute(
+                    orders_df, snapshot, current_time, self.cash
+                )
+
+                for fill in fills:
+                    symbol = fill["symbol"]
+                    qty = fill["quantity"]
+                    price = fill["fill_price"]
+                    slippage = fill["slippage"]
+                    cost = qty * price + slippage
+
+                    # Update positions and cash
+                    if fill["side"] == "buy":
+                        self.positions[symbol] += qty
+                        self.cash -= cost
+                    else:
+                        self.positions[symbol] -= qty
+                        self.cash += qty * price - slippage
+
+                    self.history.append(
+                        {
+                            **fill,
+                            "cash": self.cash,
+                            "timestamp": current_time,
+                        }
+                    )
+
+                # === Position delta logging ===
+                position_deltas = []
+                for sym in set(self.positions.keys()).union(prev_positions.keys()):
+                    prev_qty = prev_positions.get(sym, 0)
+                    curr_qty = self.positions.get(sym, 0)
+                    delta = curr_qty - prev_qty
+                    if delta != 0:
+                        side = "buy" if delta > 0 else "sell"
+                        position_deltas.append((sym, side, abs(delta)))
+
+                if position_deltas:
+                    for sym, side, qty in position_deltas:
+                        tqdm.write(f"📦 Position change: {side} {qty} of {sym}")
+
+            # === Update holding periods ===
+            for sym in list(self.positions):
+                if self.positions[sym] > 0:
+                    self.position_age[sym] += 1
+                else:
+                    self.position_age[sym] = 0
+
+            # === Daily summary ===
+            tqdm.write(
+                f"💰 {current_day.date()} | Cash: {self.cash:,.2f}, "
+                f"Equity: {total_equity:,.2f}, "
+                f"Drawdown: {drawdown:.2%}\n"
             )
 
-            fills = self.models.execution.execute_orders(
-                target_positions=targets, market_data=day_data
-            )
+        result_df = pd.DataFrame(self.history)
+        equity_curve = (
+            pd.DataFrame(self.daily_metrics)
+            .set_index("timestamp")["equity"]
+            .sort_index()
+            .ffill()
+        )
 
-            self._update_positions(fills)
-            all_fills.append(fills)
-
-            value = self._portfolio_value(day_data)
-            portfolio_value_series.append((current_date, value))
-
-        result_df = pd.DataFrame(portfolio_value_series, columns=["timestamp", "value"])
-        equity_curve = result_df.set_index("timestamp")["value"]
-
-        if all_fills:
-            combined_fills = pd.concat(all_fills)
-            self.execution_stats = {
-                "avg_slippage_bps": combined_fills["slippage_pct"].mean(),
-                "total_slippage": combined_fills["slippage"].sum(),
-                "num_fills": len(combined_fills),
-            }
-
-        return equity_curve
-
-    def _update_positions(self, fills: pd.DataFrame):
-        for symbol, row in fills.iterrows():
-            qty = row.get("quantity", 0)
-            price = row.get("fill_price", 0.0)
-            cost = qty * price
-            self.positions[symbol] = self.positions.get(symbol, 0) + qty
-            self.cash -= cost
-
-    def _portfolio_value(self, day_data: pd.DataFrame) -> float:
-        value = self.cash
-        price_map = day_data.set_index("symbol")["close"].to_dict()
-        for symbol, qty in self.positions.items():
-            price = price_map.get(symbol)
-            if price is not None:
-                value += qty * price
-        return value
+        return result_df, equity_curve

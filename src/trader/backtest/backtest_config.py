@@ -10,6 +10,8 @@ class BacktestConfig:
     initial_capital: float = 100_000.0
     top_n: int = 10  # top-N symbols to trade per day
     warmup_period: int = 20  # number of bars to skip for indicator warmup
+    allow_shorting: bool = False
+    settlement_delay: int = 2  # T+2
     save_results: bool = True
     results_dir: str = "results"
     output_format: str = "parquet"  # or 'json'

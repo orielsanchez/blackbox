@@ -1,12 +1,48 @@
-# Python-generated files
+# === Python & Virtualenv ===
 __pycache__/
-*.py[oc]
-build/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
 dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
+build/
+.eggs/
+.venv/
 .env
+*.log
+
+# === macOS ===
+.DS_Store
+
+# === Jupyter/Notebook ===
+.ipynb_checkpoints/
+
+# === IDEs ===
+.vscode/
+.idea/
+
+# === Results and Outputs ===
 data
+db
+results/
+*.csv
+*.parquet
+*.json
+
+# === Git Control Files ===
+*.orig
+
+# === Project-specific ===
+uv.lock
+universe/top_2000_by_volume.csv
+benchmark_*.csv
+
+# === Compiled Cython or C extensions ===
+*.pyd
+*.dll
+*.dylib
+*.c
+*.cpp
+
+# === Misc CLI Scripts (not staged yet) ===
+src/trader/cli/*.py

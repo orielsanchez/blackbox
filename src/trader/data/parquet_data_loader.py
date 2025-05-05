@@ -1,77 +1,129 @@
-import json
 import logging
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import List
 
-import duckdb
 import pandas as pd
-
-SYMBOL_CACHE_FILE = Path(".symbol_cache.json")
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 
 
 class ParquetDataLoader:
-    def __init__(self, data_dir: str = "data/ohlcv/minute/hive_parquet"):
+    def __init__(
+        self,
+        data_dir: str = "data/ohlcv/minute/hive_parquet",
+        engine: str = "pyarrow",
+    ):
         self.data_dir = Path(data_dir).resolve()
+        self.engine = engine
         if not self.data_dir.exists():
             raise FileNotFoundError(f"Data directory not found: {self.data_dir}")
-        self.conn = duckdb.connect()
         logger.info(f"Initialized ParquetDataLoader with data path: {self.data_dir}")
 
-    def load_all_data(self, start: datetime, end: datetime) -> pd.DataFrame:
-        logger.info(f"Loading all data from {start.date()} to {end.date()}")
-        query = f"""
-        SELECT * FROM read_parquet('{self.data_dir}/symbol=*/date=*/part-*.parquet')
-        WHERE date BETWEEN '{start.date()}' AND '{end.date()}'
-        ORDER BY timestamp
-        """
-        df = self.conn.execute(query).fetchdf()
-        logger.info(f"Loaded {len(df)} rows")
-        return df
+    def _load_single_symbol(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> pd.DataFrame:
+        symbol_dir = self.data_dir / f"symbol={symbol}"
+        if not symbol_dir.exists():
+            tqdm.write(f"⚠️  Directory not found for symbol {symbol}")
+            return pd.DataFrame()
+
+        # Collect relevant files
+        relevant_files = []
+        for date_dir in symbol_dir.glob("date=*"):
+            try:
+                date_str = date_dir.name.split("=")[-1]
+                file_date = datetime.strptime(date_str, "%Y-%m-%d")
+                if not (start <= file_date <= end):
+                    continue
+                relevant_files.extend(date_dir.glob("part-*.parquet"))
+            except ValueError:
+                tqdm.write(f"⚠️  Skipping unrecognized date format in {date_dir}")
+                continue
+
+        dfs = []
+        for f in relevant_files:
+            try:
+                df = pd.read_parquet(f, engine=self.engine)  # type: ignore[arg-type]
+
+                if "window_start" in df.columns:
+                    df = df.rename(columns={"window_start": "timestamp"})
+
+                if "timestamp" not in df.columns:
+                    tqdm.write(f"⚠️  No timestamp column found in {f}, skipping")
+                    continue
+
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+                df = df.dropna(subset=["timestamp"])
+
+                # Standardize to price column
+                if "close" in df.columns and "price" not in df.columns:
+                    df = df.rename(columns={"close": "price"})
+
+                df["symbol"] = symbol
+                dfs.append(df)
+            except Exception as e:
+                tqdm.write(f"❌ Error loading {f} for {symbol}: {e}")
+
+        if not dfs:
+            return pd.DataFrame()
+
+        symbol_df = pd.concat(dfs, ignore_index=True)
+        symbol_df = symbol_df.drop_duplicates(subset=["symbol", "timestamp"])
+        symbol_df = symbol_df.sort_values(["symbol", "timestamp"])
+        return symbol_df
 
     def load_symbols(
-        self, symbols: list[str], start: datetime, end: datetime
+        self,
+        symbols: List[str],
+        start: datetime,
+        end: datetime,
+        max_workers: int = 8,
     ) -> pd.DataFrame:
         logger.info(
-            f"Loading data for {len(symbols)} symbols from {start.date()} to {end.date()}"
+            f"Loading {len(symbols)} symbols from {start.date()} to {end.date()}"
         )
-        symbol_filter = ", ".join(f"'{s}'" for s in symbols)
-        query = f"""
-        SELECT * FROM read_parquet('{self.data_dir}/symbol=*/date=*/part-*.parquet')
-        WHERE date BETWEEN '{start.date()}' AND '{end.date()}'
-        AND symbol IN ({symbol_filter})
-        ORDER BY timestamp
-        """
-        df = self.conn.execute(query).fetchdf()
-        logger.info(f"Loaded {len(df)} rows for requested symbols")
+        all_data = []
+        max_workers = min(max_workers, len(symbols))
+
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self._load_single_symbol, symbol, start, end
+                    ): symbol
+                    for symbol in symbols
+                }
+
+                for i, future in enumerate(
+                    tqdm(as_completed(futures), total=len(futures), file=sys.stdout)
+                ):
+                    symbol = futures[future]
+                    try:
+                        df = future.result()
+                        all_data.append(df)
+                        tqdm.write(
+                            f"[{i+1}/{len(symbols)}] ✅ Loaded {len(df)} rows for {symbol}"
+                        )
+                    except Exception as e:
+                        tqdm.write(
+                            f"[{i+1}/{len(symbols)}] ❌ Error processing {symbol}: {e}"
+                        )
+        except KeyboardInterrupt:
+            tqdm.write("⛔ KeyboardInterrupt: Loader shutting down early.")
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+
+        if not all_data:
+            return pd.DataFrame()
+
+        df = pd.concat(all_data, ignore_index=True)
+        df = df.drop_duplicates(subset=["symbol", "timestamp"])
+        df = df.sort_values(["symbol", "timestamp"])
         return df
 
-    def get_available_symbols(self, use_cache: bool = True) -> list[str]:
-        if use_cache and SYMBOL_CACHE_FILE.exists():
-            logger.info("Loading symbols from cache...")
-            with open(SYMBOL_CACHE_FILE, "r") as f:
-                return json.load(f)
-
-        logger.info("Querying symbols from Parquet files...")
-        query = f"""
-        SELECT DISTINCT symbol
-        FROM read_parquet('{self.data_dir}/symbol=*/date=*/part-*.parquet')
-        """
-        df = self.conn.execute(query).fetchdf()
-        symbols = df["symbol"].dropna().unique().tolist()
-        logger.info(f"Found {len(symbols)} unique symbols")
-
-        if use_cache:
-            with open(SYMBOL_CACHE_FILE, "w") as f:
-                json.dump(symbols, f)
-            logger.info(f"Cached {len(symbols)} symbols to {SYMBOL_CACHE_FILE}")
-
-        return symbols
-
     def close(self):
-        self.conn.close()
-        logger.info("Closed DuckDB connection")
+        logger.info("No database connection to close (using native Parquet reads).")
