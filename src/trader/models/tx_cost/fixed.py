@@ -10,7 +10,7 @@ class FixedCostModel(TransactionCostModel):
     def __init__(self, cost_per_share: float = 0.01):
         self.cost_per_share = cost_per_share
 
-    def estimate(
+    def score(
         self, trades: pd.DataFrame, timestamp: Optional[pd.Timestamp] = None
     ) -> pd.DataFrame:
         """

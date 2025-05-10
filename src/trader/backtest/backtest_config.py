@@ -12,6 +12,7 @@ class BacktestConfig:
     warmup_period: int = 20  # number of bars to skip for indicator warmup
     allow_shorting: bool = False
     settlement_delay: int = 2  # T+2
+    log_positions: bool = False
     save_results: bool = True
     results_dir: str = "results"
     output_format: str = "parquet"  # or 'json'

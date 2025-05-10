@@ -1,4 +1,5 @@
 import logging
+import os
 from collections import defaultdict
 from typing import Tuple
 
@@ -7,6 +8,7 @@ from tqdm import tqdm
 
 from trader.backtest.backtest_config import BacktestConfig
 from trader.core.engine import ModelBundle
+from trader.utils.alpha_diagnostics_logger import AlphaDiagnosticsLogger
 
 logger = logging.getLogger(__name__)
 
@@ -16,17 +18,21 @@ class Backtester:
         self.models = models
         self.config = config
         self.cash = config.initial_capital
-        self.positions = defaultdict(int)  # symbol -> shares
-        self.position_age = defaultdict(int)  # symbol -> days held
+        self.positions = defaultdict(int)
+        self.position_age = defaultdict(int)
         self.history = []
         self.daily_metrics = []
+        self.diagnostics = None
 
     def run(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
         logger.info("Starting backtest...")
         df = data.copy()
         df["symbol"] = df["symbol"].astype(str)
 
-        # === Normalize timestamp column ===
+        output_dir = self.config.results_dir or "results/default"
+        os.makedirs(output_dir, exist_ok=True)
+        self.diagnostics = AlphaDiagnosticsLogger(output_dir)
+
         if "timestamp" not in df.columns:
             if "day" in df.columns:
                 df = df.rename(columns={"day": "timestamp"})
@@ -47,7 +53,6 @@ class Backtester:
                 raise ValueError("Missing both 'price' and 'close' columns.")
 
         df = df.sort_values(["symbol", "timestamp"]).dropna(subset=["price"])
-
         unique_days = df["timestamp"].dt.floor("D").drop_duplicates().sort_values()
         if self.config.warmup_period > 0:
             unique_days = unique_days[self.config.warmup_period :]
@@ -57,9 +62,7 @@ class Backtester:
 
         for current_day in tqdm(unique_days, desc="Backtest", unit="day"):
             tqdm.write(f"📆 Processing {current_day.date()}")
-
             prev_positions = self.positions.copy()
-
             daily_df = df[df["timestamp"].dt.floor("D") == current_day]
             if daily_df.empty:
                 continue
@@ -68,10 +71,11 @@ class Backtester:
                 snapshot = daily_df[daily_df["timestamp"] == current_time][
                     ["symbol", "price", "volume"]
                 ]
-
                 window = df[df["timestamp"] < current_time]
 
                 alpha_df = self.models.alpha.score(window, current_time)
+                self.diagnostics.log_daily_alpha(alpha_df, current_time)
+
                 risk_df = self.models.risk.score(window, current_time)
 
                 current_prices = snapshot.set_index("symbol")["price"]
@@ -106,11 +110,9 @@ class Backtester:
                 current_pos_df["price"] = (
                     current_pos_df["symbol"].map(current_prices).fillna(0)
                 )
-
-                tx_df = self.models.tx_cost.estimate(current_pos_df, current_time)
+                tx_df = self.models.tx_cost.score(current_pos_df, current_time)
                 slippage_df = self.models.slippage.score(current_pos_df, current_time)
 
-                # === Holding period enforcement ===
                 eligible_symbols = alpha_df["symbol"].unique()
                 eligible_symbols = [
                     sym
@@ -164,7 +166,6 @@ class Backtester:
                     slippage = fill["slippage"]
                     cost = qty * price + slippage
 
-                    # Update positions and cash
                     if fill["side"] == "buy":
                         self.positions[symbol] += qty
                         self.cash -= cost
@@ -173,14 +174,9 @@ class Backtester:
                         self.cash += qty * price - slippage
 
                     self.history.append(
-                        {
-                            **fill,
-                            "cash": self.cash,
-                            "timestamp": current_time,
-                        }
+                        {**fill, "cash": self.cash, "timestamp": current_time}
                     )
 
-                # === Position delta logging ===
                 position_deltas = []
                 for sym in set(self.positions.keys()).union(prev_positions.keys()):
                     prev_qty = prev_positions.get(sym, 0)
@@ -190,22 +186,19 @@ class Backtester:
                         side = "buy" if delta > 0 else "sell"
                         position_deltas.append((sym, side, abs(delta)))
 
-                if position_deltas:
+                if getattr(self.config, "log_positions", False):
                     for sym, side, qty in position_deltas:
                         tqdm.write(f"📦 Position change: {side} {qty} of {sym}")
 
-            # === Update holding periods ===
             for sym in list(self.positions):
                 if self.positions[sym] > 0:
                     self.position_age[sym] += 1
                 else:
                     self.position_age[sym] = 0
 
-            # === Daily summary ===
             tqdm.write(
                 f"💰 {current_day.date()} | Cash: {self.cash:,.2f}, "
-                f"Equity: {total_equity:,.2f}, "
-                f"Drawdown: {drawdown:.2%}\n"
+                f"Equity: {total_equity:,.2f}, Drawdown: {drawdown:.2%}\n"
             )
 
         result_df = pd.DataFrame(self.history)
@@ -215,5 +208,8 @@ class Backtester:
             .sort_index()
             .ffill()
         )
+
+        self.diagnostics.save()
+        self.diagnostics.analyze()
 
         return result_df, equity_curve

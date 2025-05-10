@@ -6,7 +6,7 @@ import pandas as pd
 
 class TransactionCostModel(ABC):
     @abstractmethod
-    def estimate(
+    def score(
         self, trades: pd.DataFrame, timestamp: Optional[pd.Timestamp] = None
     ) -> pd.DataFrame:
         pass

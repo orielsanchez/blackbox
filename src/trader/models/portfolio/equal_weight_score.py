@@ -86,6 +86,16 @@ class EqualWeightScorePortfolioModel(PortfolioConstructionModel):
         else:
             df["weight"] = 0.0
 
+        result = df[["symbol", "weight", "target_value", "shares"]].copy()
+        result["weight"] = result["weight"].astype(float)
+        result["target_value"] = result["target_value"].astype(float)
+        result["shares"] = result["shares"].astype(int)
+        return standardize_model_output(
+            result,
+            required_cols=["symbol", "weight", "target_value", "shares"],
+            name="EqualWeightScorePortfolioModel",
+        )
+
         return standardize_model_output(
             df[["symbol", "weight", "target_value", "shares"]],
             required_cols=["symbol", "weight", "target_value", "shares"],
