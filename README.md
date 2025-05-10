@@ -8,9 +8,10 @@
 
 * 🔌 **Modular Architecture** — Plug-and-play support for custom alpha, risk, cost, slippage, execution, and portfolio models
 * 📚 **Unified Multi-Symbol Simulation** — Allocate capital across thousands of assets in a single run
-* ⚖️ **Realistic Execution & Costs** — Slippage and transaction cost models emulate real-world frictions
+* ⚖️ **Realistic Execution & Costs** — Slippage, transaction costs, and partial fills modeled with real-world constraints
 * 📊 **Comprehensive Metrics** — Auto-computes Sharpe, CAGR, max drawdown, win rate, turnover, and more
-* 💾 **Efficient Data Access** — Fast Parquet loading using DuckDB and hive-style partitioned datasets
+* 📀 **DuckDB-Powered Data Access** — Efficient partitioned Parquet querying via DuckDB
+* 🔀 **Monte Carlo Testing** — Stress-test strategies with randomized subsampling, block bootstraps, and parameter perturbations
 * ⚙️ **Config-Driven Runs** — Backtests are easily controlled via declarative `BacktestConfig` objects
 * 🧪 **Built for Experimentation** — Log every trade, equity curve, and metric for reproducibility and analysis
 
@@ -24,9 +25,9 @@ blackbox/
 │   ├── backtest/           # Backtest engine and config
 │   ├── cli/                # CLI scripts and entry points
 │   ├── core/               # Abstract model interfaces
-│   ├── data/               # Parquet data loaders (DuckDB)
-│   ├── models/             # Alpha, risk, portfolio, etc.
-│   ├── utils/              # Metrics, schema helpers
+│   ├── data/               # DuckDB-based parquet loaders
+│   ├── models/             # Alpha, risk, portfolio, execution, tx_cost, slippage
+│   ├── utils/              # Metrics, diagnostics, resampling
 ├── universe/               # Symbol universe definitions
 ├── results/                # Saved trades, equity, and metrics
 ├── notebooks/              # Exploratory notebooks
@@ -40,10 +41,10 @@ blackbox/
 ## 🧪 Example: Run a Backtest
 
 ```bash
-python src/trader/cli/run_backtest.py --universe universe/universe.csv
+python src/trader/cli/run_backtest.py --universe universe/universe.csv --duckdb_path db/ohlcv.duckdb
 ```
 
-Or call it programmatically:
+Or use it programmatically:
 
 ```python
 from trader.backtest.backtester import Backtester
@@ -60,9 +61,19 @@ After the run:
 
 ---
 
+## 🔀 Example: Run Monte Carlo Robustness
+
+```bash
+python src/trader/cli/run_monte_backtest.py --universe universe/universe.csv --duckdb_path db/ohlcv.duckdb --trials 100
+```
+
+This runs 100 randomized trials with block bootstrapping, symbol subsampling, and noise injection. Output includes summary stats and trial-by-trial metrics in Parquet.
+
+---
+
 ## 📂 Data Format
 
-BlackBox expects Hive-partitioned Parquet data, e.g.:
+BlackBox uses Hive-partitioned Parquet format with DuckDB:
 
 ```
 data/ohlcv/minute/hive_parquet/
@@ -71,7 +82,7 @@ data/ohlcv/minute/hive_parquet/
         └── part-0.parquet
 ```
 
-Each file should include:
+Each file must contain:
 
 * `timestamp`, `open`, `high`, `low`, `close`, `volume`, etc.
 
@@ -79,11 +90,11 @@ Each file should include:
 
 ## 📊 Metrics Tracked
 
-* **Portfolio metrics**: Sharpe, CAGR, volatility, drawdown
-* **Trade metrics**: PnL, win rate, holding period, turnover
-* **Execution metrics**: average slippage, fills, cost per trade
+* **Portfolio**: Sharpe, CAGR, volatility, drawdown
+* **Trade**: PnL, win rate, turnover, holding period
+* **Execution**: average slippage, partial fills, cost per trade
 
-Results are logged to console and saved as:
+Saved to:
 
 * `results/{id}/trades.parquet`
 * `results/{id}/equity.parquet`
@@ -91,15 +102,25 @@ Results are logged to console and saved as:
 
 ---
 
+## 🔧 Realistic Models
+
+* `VolumeAdjustedTxCostModel`: cost scales with notional and liquidity
+* `VolatilityImpactSlippageModel`: slippage linked to EWMA volatility
+* `DelayedPartialFillExecutionModel`: simulates partial fills and execution delays
+
+These models increase realism for stress testing execution and performance.
+
+---
+
 ## 🗺️ Roadmap
 
 * [x] Modular model interfaces
 * [x] Multi-symbol backtesting and capital allocation
-* [x] Execution, slippage, and cost tracking
-* [x] Hive-style parquet loader with DuckDB
-* [ ] Composite alpha blending and risk-adjusted scoring
-* [ ] Streamlit dashboard for live result inspection
-* [ ] Live/paper trading adapter (e.g., Alpaca, Binance)
+* [x] Realistic cost and slippage simulation
+* [x] Monte Carlo resampling for robustness
+* [ ] Composite alpha blending with dynamic regime switching
+* [ ] Streamlit dashboard for visualization
+* [ ] Live/paper trading via broker adapters (e.g., Alpaca)
 
 ---
 
