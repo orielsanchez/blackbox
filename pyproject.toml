@@ -1,12 +1,45 @@
 [project]
 name = "blackbox"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.1.1"
+description = "Quant research system with modular models and backtest engine"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+
 dependencies = [
+    "dacite>=1.9.2",
+    "duckdb>=1.2.2",
     "matplotlib>=3.10.3",
     "numpy>=2.2.5",
     "pandas>=2.2.3",
-    "ruff>=0.11.9",
+    "python-dotenv>=1.1.0",
+    "pyyaml>=6.0.2",
+    "rich>=14.0.0",
+    "ruff>=0.1.11",
 ]
+
+[project.urls]
+homepage = "https://github.com/orielsanchez/blackbox"
+repository = "https://github.com/orielsanchez/blackbox"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+blackbox = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict_optional = true
+disallow_untyped_defs = true
+check_untyped_defs = true

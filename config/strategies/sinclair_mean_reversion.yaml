@@ -1,0 +1,71 @@
+run_id: "sinclair_mean_reversion_2024"
+start_date: "2023-01-01"
+end_date: "2023-12-31"
+
+# === Universe ===
+universe_file: "universe/top_500_by_volume.csv"
+
+# === Output ===
+output_dir: "results/sinclair_mean_reversion_2024"
+diagnostics_dir: "results/sinclair_mean_reversion_2024/diagnostics"
+
+# === Data ===
+data:
+  db_path: "db/ohlcv.duckdb"
+  rolling: true
+  window: 20
+
+# === Alpha Model ===
+alpha_model:
+  name: "mean_reversion"
+  params:
+    window: 20  # short-term mean reversion
+    threshold: 0.5
+
+# === Risk Model ===
+risk_model:
+  name: "position_limit"
+  params:
+    max_leverage: 1.0
+    max_position_size: 0.25
+    allow_shorts: false
+
+# === Transaction Cost Model ===
+tx_cost_model:
+  name: "quadratic_market_impact"
+  params:
+    commission_rate: 0.0001
+    impact_coefficient: 0.00005
+    min_commission: 1.0
+
+
+# === Portfolio Construction Model ===
+portfolio_model:
+  name: "volatility_scaled"
+  params:
+    vol_lookback: 20     # normalize by 20-day vol
+    risk_target: 0.1    # max 2% volatility per asset
+    max_weight: 0.2
+
+# === Execution Model ===
+execution_model:
+  name: "market"
+  params:
+    slippage: 0.0002
+    commission: 0.0001
+    initial_portfolio_value: 1_000_000
+    fractional: true
+    allow_shorts: true
+    min_notional: 1.0
+
+# === Constraints ===
+min_holding_period: 3     # must hold for 3 business days
+settlement_delay: 2       # T+2 simulation
+window: 20
+rolling: true
+
+# === Logging ===
+log_level: "INFO"
+log_to_console: true
+log_to_file: true
+structured_logging: true

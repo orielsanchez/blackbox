@@ -1,0 +1,68 @@
+run_id: "debug_microtest"
+start_date: "2022-12-01"
+end_date: "2023-01-10"
+
+# === Universe ===
+universe_file: "universe/micro_universe.csv"  # ⬅️ Create a CSV with 3-5 tickers
+
+# === Output ===
+output_dir: "results/debug_microtest"
+diagnostics_dir: "results/debug_microtest/diagnostics"
+
+# === Data ===
+data:
+  db_path: "db/ohlcv.duckdb"
+  rolling: true
+  window: 5
+
+# === Alpha Model ===
+alpha_model:
+  name: "mean_reversion"
+  params:
+    window: 5
+    threshold: 0.5
+
+# === Risk Model ===
+risk_model:
+  name: "position_limit"
+  params:
+    max_leverage: 1.0
+    max_position_size: 0.5
+    allow_shorts: false
+
+# === Transaction Cost Model ===
+tx_cost_model:
+  name: "quadratic_market_impact"
+  params:
+    commission_rate: 0.0001
+    impact_coefficient: 0.00005
+    min_commission: 1.0
+
+# === Portfolio Construction ===
+portfolio_model:
+  name: "volatility_scaled"
+  params:
+    vol_lookback: 5
+    risk_target: 0.01
+    max_weight: 0.4
+
+# === Execution Model ===
+execution_model:
+  name: "market"
+  params:
+    slippage: 0.0001
+    commission: 0.0001
+    initial_portfolio_value: 100_000
+    fractional: true
+    allow_shorts: false
+    min_notional: 10.0
+
+# === Constraints ===
+min_holding_period: 2
+settlement_delay: 1
+
+# === Logging ===
+log_level: "DEBUG"
+log_to_console: true
+log_to_file: true
+structured_logging: false

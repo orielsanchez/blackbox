@@ -34,8 +34,7 @@ build/
 # === Results and Outputs ===
 data
 results/
-data/
-db/
+db
 *.csv
 *.parquet
 *.json
