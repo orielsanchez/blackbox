@@ -46,8 +46,8 @@ blackbox/
 ## ⚙️ Installation
 
 ```bash
-git clone https://github.com/<your_username>/<repo_name>.git
-cd <repo_name>
+git clone https://github.com/orielsanchez/blackbox.git
+cd blackbox
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
