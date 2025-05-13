@@ -1,0 +1,49 @@
+# === Python & Virtualenv ===
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.dll
+*.dylib
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+.env
+*.log
+
+# === macOS ===
+.DS_Store
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === IDEs ===
+.vscode/
+.idea/
+
+# === Compiled C/C++ ===
+*.c
+*.cpp
+
+# === Git merge conflict files ===
+*.orig
+
+# === Results and Outputs ===
+data
+results/
+data/
+db/
+*.csv
+*.parquet
+*.json
+benchmark_*.csv
+
+# === Project-specific ignore rules ===
+uv.lock
+
+# === CLI Scripts (ignore raw/unstaged ones, but not key entrypoints) ===
+src/*/cli/*.py
+!src/*/cli/run_*.py  # Keep main CLI entrypoints (run_backtest.py, run_live_trader.py, etc.)
