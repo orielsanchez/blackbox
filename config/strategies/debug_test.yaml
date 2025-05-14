@@ -21,6 +21,12 @@ alpha_model:
   params:
     window: 5
     threshold: 0.5
+    features:
+      - name: "zscore_price"
+        params: { period: 5 }
+      - name: "bollinger_band"
+        params: { period: 5, std_dev: 2.0 }
+
 
 # === Risk Model ===
 risk_model:

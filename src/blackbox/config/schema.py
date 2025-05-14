@@ -1,11 +1,21 @@
-from dataclasses import dataclass
-from typing import Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class FeatureSpec:
+    name: str
+    params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class ModelConfig:
     name: str
-    params: Optional[Dict] = None
+    params: Optional[Dict[str, Any]] = field(default_factory=dict)
+
+    def get_feature_spec(self) -> List[FeatureSpec]:
+        features = self.params.get("features", [])
+        return [FeatureSpec(**f) for f in features]
 
 
 @dataclass

@@ -5,12 +5,6 @@ from blackbox.models.interfaces import RiskModel
 
 class PositionLimitRisk(RiskModel):
     name = "position_limit"
-    """
-    Risk model that clips weights based on:
-    - max position size
-    - optional short-selling ban
-    - optional leverage normalization
-    """
 
     def __init__(
         self,
@@ -23,17 +17,26 @@ class PositionLimitRisk(RiskModel):
         self.allow_shorts = allow_shorts
 
     def apply(self, signals: pd.Series, current_portfolio: pd.Series) -> pd.Series:
-        weights = signals.copy()
+        if signals.empty:
+            return pd.Series(dtype=float)
 
-        # Clip weights
-        weights = weights.clip(
+        # Step 1: Rank signals by absolute value
+        ranked = signals.abs().sort_values(ascending=False)
+
+        # Step 2: Determine how many positions we can afford
+        max_positions = int(self.max_leverage / self.max_position_size)
+        selected_symbols = ranked.head(max_positions).index
+
+        # Step 3: Take only top signals and clip them
+        selected = signals[selected_symbols]
+        selected = selected.clip(
             lower=-self.max_position_size if self.allow_shorts else 0.0,
             upper=self.max_position_size,
         )
 
-        # Normalize to total leverage if needed
-        total_abs = weights.abs().sum()
-        if total_abs > self.max_leverage and total_abs > 0:
-            weights *= self.max_leverage / total_abs
+        # Step 4: Normalize weights to match total leverage (optional)
+        total_abs = selected.abs().sum()
+        if total_abs > 0:
+            selected *= self.max_leverage / total_abs
 
-        return weights
+        return selected

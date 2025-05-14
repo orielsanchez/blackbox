@@ -9,6 +9,7 @@ from blackbox.models.interfaces import (AlphaModel, ExecutionModel,
                                         TransactionCostModel)
 from blackbox.models.tracker import PositionTracker
 from blackbox.research.metrics import PerformanceMetrics
+from blackbox.utils.context import get_feature_matrix, get_logger
 from blackbox.utils.logger import RichLogger
 
 
@@ -20,7 +21,7 @@ class BacktestEngine:
         cost: TransactionCostModel,
         portfolio: PortfolioConstructionModel,
         execution: ExecutionModel,
-        logger: RichLogger,
+        logger: Optional[RichLogger] = None,
         position_tracker: Optional[PositionTracker] = None,
         min_holding_period: int = 0,
         slippage: float = 0.001,
@@ -30,7 +31,7 @@ class BacktestEngine:
         self.cost = cost
         self.portfolio = portfolio
         self.execution = execution
-        self.logger = logger
+        self.logger = logger or get_logger()
 
         self.tracker = position_tracker or PositionTracker()
         self.min_holding = min_holding_period
@@ -38,14 +39,24 @@ class BacktestEngine:
         self.history: list[DailyLog] = []
 
     def run(self, data: list[dict]) -> pd.DataFrame:
+        feature_matrix = get_feature_matrix()
+
         for snapshot in data:
             date: pd.Timestamp = snapshot["date"]
             prices: pd.Series = snapshot["prices"]
 
+            snapshot["feature_matrix"] = feature_matrix
+
+            # Simulate price movement and update capital
+            self.execution.mark_to_market(prices)
+            snapshot["capital"] = self.execution.portfolio_value
+
             # === Alpha
             signals = self.alpha.generate(snapshot)
-            self.logger.debug(
-                f"{date.date()} alpha signals: {signals[signals != 0].to_dict()}"
+            nonzero_signals = signals[signals != 0]
+            top_signals = nonzero_signals.sort_values(key=abs, ascending=False).head(5)
+            self.logger.info(
+                f"{date.date()} alpha signals: {len(nonzero_signals)} non-zero | Top: {top_signals.to_dict()}"
             )
 
             # === Risk

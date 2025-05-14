@@ -2,6 +2,12 @@ run_id: "sinclair_mean_reversion_2024"
 start_date: "2023-01-01"
 end_date: "2023-12-31"
 
+# === Logging ===
+log_level: "INFO"
+log_to_console: true
+log_to_file: true
+structured_logging: true
+
 # === Universe ===
 universe_file: "universe/top_500_by_volume.csv"
 
@@ -19,8 +25,16 @@ data:
 alpha_model:
   name: "mean_reversion"
   params:
-    window: 20  # short-term mean reversion
-    threshold: 0.5
+    threshold: 0.0001
+    features:
+      - name: zscore_price
+        params:
+          period: 20
+      - name: bollinger_band
+        params:
+          period: 20
+          std_dev: 2.0
+
 
 # === Risk Model ===
 risk_model:
@@ -28,7 +42,7 @@ risk_model:
   params:
     max_leverage: 1.0
     max_position_size: 0.25
-    allow_shorts: false
+    allow_shorts: true
 
 # === Transaction Cost Model ===
 tx_cost_model:
@@ -46,6 +60,9 @@ portfolio_model:
     vol_lookback: 20     # normalize by 20-day vol
     risk_target: 0.1    # max 2% volatility per asset
     max_weight: 0.2
+    min_notional: 1.0
+    min_price: 1.0
+    max_dollar_per_symbol: 100_000
 
 # === Execution Model ===
 execution_model:
@@ -53,7 +70,7 @@ execution_model:
   params:
     slippage: 0.0002
     commission: 0.0001
-    initial_portfolio_value: 1_000_000
+    initial_portfolio_value: 1_000
     fractional: true
     allow_shorts: true
     min_notional: 1.0
@@ -64,8 +81,3 @@ settlement_delay: 2       # T+2 simulation
 window: 20
 rolling: true
 
-# === Logging ===
-log_level: "INFO"
-log_to_console: true
-log_to_file: true
-structured_logging: true

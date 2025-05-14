@@ -71,7 +71,7 @@ class RichLogger:
     def info(self, msg: str):
         self.logger.info(msg)
 
-    def warn(self, msg: str):
+    def warning(self, msg: str):
         self.logger.warning(msg)
 
     def error(self, msg: str):

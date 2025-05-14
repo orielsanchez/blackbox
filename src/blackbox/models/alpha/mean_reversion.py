@@ -1,61 +1,66 @@
-from typing import Dict
-
 import pandas as pd
 
 from blackbox.models.interfaces import AlphaModel
+from blackbox.utils.context import get_feature_matrix, get_logger
 
 
-class MeanReversionAlpha(AlphaModel):
+class MeanReversionAlphaModel(AlphaModel):
     name = "mean_reversion"
-    """
-    Time-series mean reversion strategy.
-    Generates long/short signals based on Z-score of close price vs. rolling mean.
-    """
 
-    def __init__(self, window: int = 20, threshold: float = 1.5):
+    def __init__(
+        self, window: int = 20, threshold: float = 0.01, features: list[dict] = None
+    ):
         self.window = window
         self.threshold = threshold
+        self.logger = get_logger()
 
-    def generate(self, snapshot: Dict) -> pd.Series:
-        """
-        Args:
-            snapshot (Dict): Should contain 'ohlcv': Dict[symbol → pd.DataFrame]
+    def generate(self, snapshot: dict) -> pd.Series:
+        date: pd.Timestamp = snapshot["date"]
+        feature_matrix = get_feature_matrix()
 
-        Returns:
-            pd.Series: symbol → alpha signal in [-1, 1]
-        """
-        ohlcv: Dict[str, pd.DataFrame] = snapshot.get("ohlcv", {})
-        signals = {}
+        z_col = f"zscore_{self.window}d"
+        b_col = f"bollinger_norm_{self.window}"
 
-        for symbol, df in ohlcv.items():
-            if not isinstance(df, pd.DataFrame):
-                continue  # malformed entry
+        assert z_col in feature_matrix.columns, f"{z_col} missing"
+        assert b_col in feature_matrix.columns, f"{b_col} missing"
 
-            if "close" not in df.columns or len(df) < self.window:
-                continue
+        if date not in feature_matrix.index.get_level_values(0):
+            self.logger.warning(f"⚠️ No features for {date.date()}")
+            return pd.Series(dtype=float)
 
-            close = df["close"].iloc[-self.window :]
-            if close.isna().any():
-                continue  # skip if recent prices are missing
+        try:
+            today_features = feature_matrix.loc[date]
+        except KeyError:
+            self.logger.warning(f"⚠️ No features for {date.date()} (KeyError)")
+            return pd.Series(dtype=float)
 
-            mean = close.mean()
-            std = close.std()
-            if std == 0 or pd.isna(std):
-                continue  # avoid divide-by-zero
+        # ✅ Flatten index to symbols if MultiIndex
+        if isinstance(today_features.index, pd.MultiIndex):
+            today_features.index = today_features.index.get_level_values("symbol")
 
-            zscore = (close.iloc[-1] - mean) / std
+        # Validate columns exist
+        if z_col not in today_features.columns or b_col not in today_features.columns:
+            self.logger.warning(f"⚠️ Missing expected features: {z_col} or {b_col}")
+            return pd.Series(dtype=float)
 
-            if zscore < -self.threshold:
-                signals[symbol] = min(1.0, abs(zscore))  # long
-            elif zscore > self.threshold:
-                signals[symbol] = -min(1.0, abs(zscore))  # short
-            else:
-                signals[symbol] = 0.0
+        self.logger.debug(
+            f"{date.date()} feature snapshot: {today_features[[z_col, b_col]].describe().to_dict()}"
+        )
 
-        alpha = pd.Series(signals).fillna(0.0)
+        score = -0.6 * today_features[z_col] - 0.4 * today_features[b_col]
+        score = score.where(score.abs() > self.threshold, 0)
 
-        # Normalize weights (optional)
-        if alpha.abs().sum() > 1.0:
-            alpha = alpha / alpha.abs().sum()
+        # ✅ Remove any lingering NaNs
+        score = score.fillna(0)
 
-        return alpha
+        # ✅ Final check for duplicates
+        if score.index.duplicated().any():
+            dupes = score.index[score.index.duplicated()].tolist()
+            self.logger.warning(f"⚠️ Alpha output contains duplicate symbols: {dupes}")
+            score = score[~score.index.duplicated(keep="first")]
+
+        self.logger.debug(
+            f"{date.date()} score sample: {score[score != 0].head().to_dict()}"
+        )
+
+        return score.sort_index()

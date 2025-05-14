@@ -47,7 +47,7 @@ class PerformanceMetrics:
         # Build a DataFrame of all prices
         price_df = pd.DataFrame([row["prices"] for _, row in history.iterrows()])
         price_df.index = history.index
-        price_returns = price_df.pct_change().fillna(0)
+        price_returns = price_df.pct_change(fill_method=None).fillna(0)
 
         # Compute daily portfolio return = sum(weights * price returns)
         returns = []
