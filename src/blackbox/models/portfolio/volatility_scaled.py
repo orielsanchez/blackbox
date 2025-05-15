@@ -1,14 +1,22 @@
 from typing import Dict
 
-import numpy as np
 import pandas as pd
 
 from blackbox.models.interfaces import PortfolioConstructionModel
 from blackbox.utils.context import get_logger
+from blackbox.utils.normalization import SignalNormalizer
 
 
 class VolatilityScaledPortfolio(PortfolioConstructionModel):
     name = "volatility_scaled"
+
+    ALLOWED_NORMALIZATIONS = {
+        "zscore",
+        "minmax",
+        "rank",
+        "softmax",
+        "winsorized_zscore",
+    }
 
     def __init__(
         self,
@@ -19,6 +27,7 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
         max_dollar_per_symbol: float = 100_000.0,
         min_notional: float = 1.0,
         min_price: float = 1.0,
+        normalization: str = "zscore",
     ):
         self.vol_lookback = vol_lookback
         self.risk_target = risk_target
@@ -27,8 +36,21 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
         self.max_dollar_per_symbol = max_dollar_per_symbol
         self.min_notional = min_notional
         self.min_price = min_price
-
+        self.normalization = normalization
         self.logger = get_logger()
+
+        if normalization not in self.ALLOWED_NORMALIZATIONS:
+            raise ValueError(f"❌ Unsupported normalization method: {normalization}")
+
+        self.invested_weights = {}
+        self.portfolio_value = 0.0
+
+    def normalize_signals(self, alpha: pd.Series) -> pd.Series:
+        method = getattr(SignalNormalizer, self.normalization, None)
+        if method is None:
+            self.logger.warning(f"⚠️ Unknown normalization method: {self.normalization}")
+            return alpha
+        return method(alpha)
 
     def construct(self, alpha: pd.Series, snapshot: Dict) -> pd.Series:
         ohlcv: pd.DataFrame = snapshot.get("ohlcv")
@@ -38,14 +60,8 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
             self.logger.warning("⚠️ Skipping portfolio construction: capital is 0")
             return pd.Series(dtype=float)
 
-        if (
-            not isinstance(ohlcv, pd.DataFrame)
-            or ohlcv.empty
-            or "close" not in ohlcv.columns
-        ):
-            self.logger.warning(
-                "⚠️ Skipping portfolio construction: OHLCV missing or malformed"
-            )
+        if not isinstance(ohlcv, pd.DataFrame) or ohlcv.empty or "close" not in ohlcv.columns:
+            self.logger.warning("⚠️ Skipping portfolio construction: OHLCV missing or malformed")
             return pd.Series(dtype=float)
 
         # 🔧 Collapse MultiIndex alpha to most recent day
@@ -64,9 +80,9 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
             alpha = alpha.groupby(level=0).mean()
 
         # Normalize alpha
-        if alpha.std() > 0:
-            alpha = alpha / alpha.std()
+        alpha = self.normalize_signals(alpha)
 
+        # Compute rolling vol
         vols = {}
         for symbol in alpha.index:
             try:
@@ -88,21 +104,15 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
         vol_series = pd.Series(vols)
 
         notional_risk = self.risk_target * capital
-        dollar_targets = (notional_risk / vol_series).clip(
-            upper=self.max_dollar_per_symbol
-        )
+        dollar_targets = (notional_risk / vol_series).clip(upper=self.max_dollar_per_symbol)
 
         common = alpha.index.intersection(dollar_targets.index)
         if common.empty:
             return pd.Series(dtype=float)
 
         try:
-            recent_prices = (
-                ohlcv.loc[(slice(None), common), "close"].groupby("symbol").last()
-            )
-            common = common.intersection(
-                recent_prices[recent_prices >= self.min_price].index
-            )
+            recent_prices = ohlcv.loc[(slice(None), common), "close"].groupby("symbol").last()
+            common = common.intersection(recent_prices[recent_prices >= self.min_price].index)
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to filter by price: {e}")
 
@@ -125,15 +135,18 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
         if gross_exposure > 0:
             weights *= min(1.0, 1.0 / gross_exposure)
 
+        self.invested_weights = weights.to_dict()
         self.logger.info(
             f"✅ Constructed {len(weights)} positions | Gross exposure: {gross_exposure:.2f}"
         )
         return weights.fillna(0).sort_index()
 
+    def feedback_from_execution(self, feedback: dict):
+        pass  # Not implemented yet
 
-def mark_to_market(self, prices: pd.Series):
-    portfolio_val = 0.0
-    for symbol, weight in self.invested_weights.items():
-        if symbol in prices:
-            portfolio_val += weight * prices[symbol]
-    self.portfolio_value = portfolio_val
+    def mark_to_market(self, prices: pd.Series):
+        portfolio_val = 0.0
+        for symbol, weight in self.invested_weights.items():
+            if symbol in prices:
+                portfolio_val += weight * prices[symbol]
+        self.portfolio_value = portfolio_val

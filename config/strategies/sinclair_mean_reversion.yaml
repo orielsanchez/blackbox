@@ -9,7 +9,7 @@ log_to_file: true
 structured_logging: true
 
 # === Universe ===
-universe_file: "universe/top_500_by_volume.csv"
+universe_file: "universe/top_2000_by_market_cap.csv"
 
 # === Output ===
 output_dir: "results/sinclair_mean_reversion_2025"
