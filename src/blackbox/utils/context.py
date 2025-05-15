@@ -41,13 +41,6 @@ def get_logger() -> RichLogger:
     return logger
 
 
-def get_logger() -> RichLogger:
-    logger = get("logger")
-    if not isinstance(logger, RichLogger):
-        raise RuntimeError("Logger is not set or is of the wrong type.")
-    return logger
-
-
 @contextmanager
 def scoped_context(overrides: dict[str, Any]):
     original = deepcopy(_context)

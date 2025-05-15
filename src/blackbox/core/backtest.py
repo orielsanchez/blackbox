@@ -1,12 +1,16 @@
 from typing import Optional
 
 import pandas as pd
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
-from blackbox.core.execution_loop import (DailyLog, TradeResult,
-                                          reconcile_trades, simulate_execution)
-from blackbox.models.interfaces import (AlphaModel, ExecutionModel,
-                                        PortfolioConstructionModel, RiskModel,
-                                        TransactionCostModel)
+from blackbox.core.execution_loop import DailyLog, TradeResult, reconcile_trades, simulate_execution
+from blackbox.models.interfaces import (
+    AlphaModel,
+    ExecutionModel,
+    PortfolioConstructionModel,
+    RiskModel,
+    TransactionCostModel,
+)
 from blackbox.models.tracker import PositionTracker
 from blackbox.research.metrics import PerformanceMetrics
 from blackbox.utils.context import get_feature_matrix, get_logger
@@ -25,6 +29,8 @@ class BacktestEngine:
         position_tracker: Optional[PositionTracker] = None,
         min_holding_period: int = 0,
         slippage: float = 0.001,
+        initial_equity: float = 1_000_000,
+        risk_free_rate: float = 0.0,
     ):
         self.alpha = alpha
         self.risk = risk
@@ -32,104 +38,143 @@ class BacktestEngine:
         self.portfolio = portfolio
         self.execution = execution
         self.logger = logger or get_logger()
-
         self.tracker = position_tracker or PositionTracker()
         self.min_holding = min_holding_period
         self.slippage = slippage
         self.history: list[DailyLog] = []
 
+        self.initial_equity = initial_equity
+        self.risk_free_rate = risk_free_rate
+
     def run(self, data: list[dict]) -> pd.DataFrame:
-        feature_matrix = get_feature_matrix()
+        full_feature_matrix = get_feature_matrix()
 
-        for snapshot in data:
-            date: pd.Timestamp = snapshot["date"]
-            prices: pd.Series = snapshot["prices"]
+        with Progress(
+            TextColumn("[bold green]\U0001f4c5 {task.description}"),
+            BarColumn(),
+            "[progress.percentage]{task.percentage:>3.0f}%",
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task("Backtesting", total=len(data))
 
-            snapshot["feature_matrix"] = feature_matrix
+            for snapshot in data:
+                date: pd.Timestamp = snapshot["date"]
+                prices: pd.Series = snapshot["prices"]
 
-            # Simulate price movement and update capital
-            self.execution.mark_to_market(prices)
-            snapshot["capital"] = self.execution.portfolio_value
+                if not self._has_features_for_date(full_feature_matrix, date):
+                    self.logger.warning(f"{date.date()} | No features available — skipping")
+                    progress.advance(task)
+                    continue
 
-            # === Alpha
-            signals = self.alpha.generate(snapshot)
-            nonzero_signals = signals[signals != 0]
-            top_signals = nonzero_signals.sort_values(key=abs, ascending=False).head(5)
-            self.logger.info(
-                f"{date.date()} alpha signals: {len(nonzero_signals)} non-zero | Top: {top_signals.to_dict()}"
+                try:
+                    snapshot["feature_vector"] = full_feature_matrix.loc[date]
+                except KeyError:
+                    self.logger.warning(f"{date.date()} | Feature lookup failed — skipping")
+                    progress.advance(task)
+                    continue
+
+                if prices.empty:
+                    self.logger.warning(f"{date.date()} | No price data — skipping")
+                    progress.advance(task)
+                    continue
+
+                self.execution.mark_to_market(prices)
+                snapshot["capital"] = self.execution.portfolio_value
+
+                try:
+                    self._simulate_day(date, snapshot, prices)
+                except Exception as e:
+                    self.logger.error(f"❌ {date.date()} | Simulation failed: {e}")
+
+                capital = snapshot.get("capital", 0)
+                progress.update(task, advance=1, description=f"{date.date()} | ${capital:,.2f}")
+
+        if not self.history:
+            self.logger.error(
+                "❌ No backtest logs recorded — likely due to missing data or capital."
             )
-
-            # === Risk
-            current_portfolio = self.tracker.get_portfolio()
-            risk_adjusted = self.risk.apply(signals, current_portfolio)
-            self.logger.debug(
-                f"{date.date()} risk-adjusted: {risk_adjusted[risk_adjusted != 0].to_dict()}"
-            )
-
-            # === Cost
-            cost_adjusted = self.cost.adjust(risk_adjusted, current_portfolio)
-            self.logger.debug(
-                f"{date.date()} cost-adjusted: {cost_adjusted[cost_adjusted != 0].to_dict()}"
-            )
-
-            # === Portfolio Construction
-            target_portfolio = self.portfolio.construct(cost_adjusted, snapshot)
-            self.logger.debug(
-                f"{date.date()} target portfolio: {target_portfolio[target_portfolio != 0].to_dict()}"
-            )
-
-            # === Trades
-            trades = reconcile_trades(current_portfolio, target_portfolio)
-            self.logger.debug(
-                f"{date.date()} raw trades: {trades[trades != 0].to_dict()}"
-            )
-
-            # === Simulate Execution
-            trade_result: TradeResult = simulate_execution(
-                trades,
-                prices,
-                slippage=self.slippage,
-                capital=self.execution.portfolio_value,
-            )
-
-            self.logger.debug(
-                f"{date.date()} executed trades: {trade_result.executed[trade_result.executed != 0].to_dict()}"
-            )
-            self.logger.debug(
-                f"{date.date()} execution feedback: {trade_result.feedback}"
-            )
-
-            # === Filter based on holding period
-            filtered_trades = self.tracker.filter(
-                trade_result.executed, date, self.min_holding
-            )
-            self.logger.debug(
-                f"{date.date()} filtered trades: {filtered_trades[filtered_trades != 0].to_dict()}"
-            )
-
-            # === Update
-            self.execution.record(filtered_trades, trade_result.feedback)
-            updated_portfolio = self.execution.update_portfolio(
-                current_portfolio, filtered_trades
-            )
-            self.tracker.update(updated_portfolio, date)
-            self.portfolio.feedback_from_execution(trade_result.feedback)
-
-            self.logger.info(f"{date.date()} | {len(filtered_trades)} trades executed")
-
-            self.history.append(
-                DailyLog(
-                    date=date,
-                    prices=prices.copy(),
-                    trades=filtered_trades.copy(),
-                    portfolio=updated_portfolio.copy(),
-                    feedback=trade_result.feedback.copy(),
-                )
-            )
+            return pd.DataFrame()
 
         return pd.DataFrame([log.__dict__ for log in self.history]).set_index("date")
 
-    def generate_metrics(self) -> dict:
+    def _has_features_for_date(self, features: pd.DataFrame, date: pd.Timestamp) -> bool:
+        return date in features.index.get_level_values("date")
+
+    def _simulate_day(self, date: pd.Timestamp, snapshot: dict, prices: pd.Series):
+        signals = self.alpha.generate(snapshot)
+
+        tradable = signals.index.intersection(prices.index)
+        if tradable.empty:
+            self.logger.warning(f"{date.date()} | No tradable signals — skipping")
+            return
+
+        signals = signals.loc[tradable]
+        nonzero_signals = signals[signals != 0]
+        top_signals = nonzero_signals.abs().sort_values(ascending=False).head(5)
+
+        self.logger.info(
+            f"{date.date()} | Alpha signals: {len(nonzero_signals)} non-zero | Top: {top_signals.to_dict()}"
+        )
+
+        current_portfolio = self.tracker.get_portfolio()
+        risk_adjusted = self.risk.apply(signals, current_portfolio)
+        self._log_portfolio_state("Risk-adjusted", date, risk_adjusted)
+
+        cost_adjusted = self.cost.adjust(risk_adjusted, current_portfolio)
+        self._log_portfolio_state("Cost-adjusted", date, cost_adjusted)
+
+        target_portfolio = self.portfolio.construct(cost_adjusted, snapshot)
+        self._log_portfolio_state("Target portfolio", date, target_portfolio)
+
+        trades = reconcile_trades(current_portfolio, target_portfolio)
+        self._log_portfolio_state("Raw trades", date, trades)
+
+        trade_result: TradeResult = simulate_execution(
+            trades,
+            prices,
+            slippage=self.slippage,
+            capital=self.execution.portfolio_value,
+        )
+
+        self._log_portfolio_state("Executed trades", date, trade_result.executed)
+        self.logger.debug(f"{date.date()} | Execution feedback: {trade_result.feedback}")
+
+        filtered_trades = self.tracker.filter(trade_result.executed, date, self.min_holding)
+        self._log_portfolio_state("Filtered trades", date, filtered_trades)
+
+        self.execution.record(filtered_trades, trade_result.feedback)
+        updated_portfolio = self.execution.update_portfolio(current_portfolio, filtered_trades)
+
+        self.tracker.update(updated_portfolio, date)
+        self.portfolio.feedback_from_execution(trade_result.feedback)
+
+        self.logger.info(f"{date.date()} | {len(filtered_trades)} trades executed")
+
+        self.history.append(
+            DailyLog(
+                date=date,
+                prices=prices.copy(),
+                trades=filtered_trades.copy(),
+                portfolio=updated_portfolio.copy(),
+                feedback=trade_result.feedback.copy(),
+            )
+        )
+
+    def _log_portfolio_state(self, label: str, date: pd.Timestamp, series: pd.Series):
+        nonzero = series[series != 0]
+        if not nonzero.empty:
+            self.logger.debug(f"{date.date()} | {label}: {nonzero.to_dict()}")
+
+    def generate_metrics(self, return_equity: bool = False) -> dict:
+        if not self.history:
+            self.logger.error("❌ Cannot compute metrics — no history available.")
+            return {}
+
         df = pd.DataFrame([log.__dict__ for log in self.history]).set_index("date")
-        metrics = PerformanceMetrics()
-        return metrics.compute(df)
+
+        metrics = PerformanceMetrics(
+            initial_value=self.initial_equity,
+            risk_free_rate=self.risk_free_rate,
+        )
+        return metrics.compute(df, return_equity=return_equity)

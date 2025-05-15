@@ -60,9 +60,7 @@ class RichLogger:
         if log_to_file:
             Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_path = Path(log_file_path).with_name(
-                f"{Path(log_file_path).stem}_{timestamp}.log"
-            )
+            file_path = Path(log_file_path).with_name(f"{Path(log_file_path).stem}_{timestamp}.log")
             file_handler = logging.FileHandler(file_path)
             file_handler.setLevel(level_enum)
             file_handler.setFormatter(formatter)

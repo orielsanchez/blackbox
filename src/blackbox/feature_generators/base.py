@@ -28,3 +28,10 @@ class BaseFeatureGenerator(ABC):
             pd.DataFrame: DataFrame with same index and one or more feature columns
         """
         pass
+
+    def run(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Public method called by pipeline to generate features.
+        Delegates to `generate()`.
+        """
+        return self.generate(data)

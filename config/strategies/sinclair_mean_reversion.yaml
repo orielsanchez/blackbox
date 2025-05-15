@@ -1,6 +1,6 @@
 run_id: "sinclair_mean_reversion_2024"
-start_date: "2023-01-01"
-end_date: "2023-12-31"
+start_date: "2021-01-01"
+end_date: "2025-05-01"
 
 # === Logging ===
 log_level: "INFO"
@@ -12,8 +12,8 @@ structured_logging: true
 universe_file: "universe/top_500_by_volume.csv"
 
 # === Output ===
-output_dir: "results/sinclair_mean_reversion_2024"
-diagnostics_dir: "results/sinclair_mean_reversion_2024/diagnostics"
+output_dir: "results/sinclair_mean_reversion_2025"
+diagnostics_dir: "results/sinclair_mean_reversion_2025/diagnostics"
 
 # === Data ===
 data:

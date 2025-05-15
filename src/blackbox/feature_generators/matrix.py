@@ -1,52 +1,83 @@
+from typing import List
+
 import pandas as pd
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
 from blackbox.config.schema import FeatureSpec
-from blackbox.feature_generators.base import feature_registry
 from blackbox.feature_generators.pipeline import FeaturePipeline
 from blackbox.utils.context import get_logger
 
 
 class FeatureMatrixGenerator:
-    def __init__(self, feature_spec: list[FeatureSpec]):
-        self.generators = [feature_registry[f.name](**f.params) for f in feature_spec]
+    def __init__(self, feature_spec: List[FeatureSpec]):
+        self.logger = get_logger()
 
-    def run(self, data: list[dict]) -> pd.DataFrame:
+        self.pipeline = FeaturePipeline(
+            [{"name": f.name, "params": f.params} for f in feature_spec]
+        )
+
+    def run(self, data: List[dict]) -> pd.DataFrame:
         feature_frames = []
 
-        for snapshot in data:
-            date = snapshot["date"]
-            raw_ohlcv = snapshot["ohlcv"]
+        with Progress(
+            TextColumn("[bold blue]📊 Generating features"),
+            BarColumn(),
+            "[progress.percentage]{task.percentage:>3.0f}%",
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task("feature-gen", total=len(data))
 
-            # Ensure MultiIndex format
-            if isinstance(raw_ohlcv, dict):
-                df = pd.concat(
-                    raw_ohlcv.values(), keys=raw_ohlcv.keys(), names=["symbol", "date"]
+            for snapshot in data:
+                date = pd.Timestamp(snapshot["date"])
+                ohlcv = snapshot["ohlcv"]
+
+                self.logger.debug(f"{date.date()} | OHLCV shape: {ohlcv.shape}")
+                self.logger.debug(
+                    f"{date.date()} | Available symbols: {ohlcv.index.get_level_values('symbol').nunique()}"
                 )
-                ohlcv = df.reset_index().set_index(["date", "symbol"]).sort_index()
-            else:
-                ohlcv = raw_ohlcv
 
-            daily_features = [gen.generate(ohlcv) for gen in self.generators]
+                try:
+                    full_feature_df = self.pipeline.run(ohlcv)
+                except Exception as e:
+                    self.logger.warning(f"{date.date()} | ⚠️ Pipeline error: {e}")
+                    progress.advance(task)
+                    continue
 
-            if not daily_features:
-                self.logger.warning(f"⚠️ No features generated for {date.date()}")
-                continue
+                # Select features for the current date
+                if "date" not in full_feature_df.index.names:
+                    self.logger.warning(f"{date.date()} | ⚠️ Feature output missing 'date' level")
+                    progress.advance(task)
+                    continue
 
-            day_df = pd.concat(daily_features, axis=1)
+                mask = full_feature_df.index.get_level_values("date") == date
+                today_df = full_feature_df[mask]
 
-            # 🔧 Key Fix: Ensure full (date, symbol) MultiIndex
-            day_df = day_df.reset_index()
-            day_df["date"] = pd.Timestamp(date)  # Ensure uniform type
-            day_df = day_df.set_index(["date", "symbol"]).sort_index()
+                if today_df.empty:
+                    self.logger.warning(f"{date.date()} | ⚠️ No features found for this date")
+                    progress.advance(task)
+                    continue
 
-            # Optional: Deduplication guard
-            day_df = day_df[~day_df.index.duplicated(keep="first")]
+                today_df = today_df.reset_index()
+                today_df["date"] = date  # Reassert consistent date if dropped
+                today_df = today_df.set_index(["date", "symbol"]).sort_index()
+                today_df = today_df[~today_df.index.duplicated(keep="first")]
 
-            feature_frames.append(day_df)
+                valid_symbols = today_df.index.get_level_values("symbol").nunique()
+                total_symbols = ohlcv.index.get_level_values("symbol").nunique()
+                self.logger.debug(
+                    f"{date.date()} | ✅ Valid symbols: {valid_symbols} / {total_symbols}"
+                )
+
+                feature_frames.append(today_df)
+                progress.advance(task)
+
+        if not feature_frames:
+            msg = "❌ No feature frames generated — check data and feature definitions."
+            self.logger.error(msg)
+            raise RuntimeError(msg)
 
         full_matrix = pd.concat(feature_frames).sort_index()
-
-        # Final safety: drop dupes again just in case
         full_matrix = full_matrix[~full_matrix.index.duplicated(keep="first")]
 
         return full_matrix

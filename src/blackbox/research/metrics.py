@@ -1,66 +1,84 @@
-from typing import Dict
+from typing import Dict, Union
 
 import numpy as np
 import pandas as pd
 
 
 class PerformanceMetrics:
-    def __init__(self, initial_value: float = 1_000_000):
+    def __init__(self, initial_value: float = 1_000_000, risk_free_rate: float = 0.0):
         self.initial_value = initial_value
+        self.risk_free_rate = risk_free_rate
 
-    def compute(self, history: pd.DataFrame) -> Dict[str, float | str]:
+    def compute(
+        self, history: pd.DataFrame, return_equity: bool = False
+    ) -> Union[Dict[str, float | str], tuple[Dict[str, float | str], pd.Series]]:
         """
-        Computes performance metrics from backtest history.
+        Compute key performance metrics from backtest history.
 
-        Assumes history is a DataFrame with:
-        - index: datetime (or 'date' column)
-        - 'portfolio': pd.Series
-        - 'prices': pd.Series
+        Parameters:
+        - history: pd.DataFrame with 'portfolio' and 'prices' columns.
+        - return_equity: If True, also return the equity curve.
+
+        Returns:
+        - metrics dict (and optionally equity curve)
         """
         equity = self._compute_equity_curve(history)
-
         returns = equity.pct_change().fillna(0)
-        cumulative = equity.iloc[-1] / equity.iloc[0] - 1
-        annual_return = (1 + cumulative) ** (252 / len(returns)) - 1
-        annual_vol = returns.std() * np.sqrt(252)
-        sharpe = annual_return / annual_vol if annual_vol != 0 else 0
-        max_dd = self._max_drawdown(equity)
 
-        return {
-            "Total Return (%)": round(cumulative * 100, 2),
+        total_return = equity.iloc[-1] / equity.iloc[0] - 1
+        annual_return = (1 + total_return) ** (252 / len(returns)) - 1
+
+        annual_volatility = returns.std() * np.sqrt(252)
+        sharpe_ratio = (
+            (annual_return - self.risk_free_rate) / annual_volatility
+            if annual_volatility != 0
+            else 0
+        )
+
+        sortino_ratio = self._sortino_ratio(returns)
+        max_drawdown = self._max_drawdown(equity)
+        calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
+
+        metrics = {
+            "Start Equity": round(equity.iloc[0], 2),
+            "End Equity": round(equity.iloc[-1], 2),
+            "Total Return (%)": round(total_return * 100, 2),
             "Annualized Return (%)": round(annual_return * 100, 2),
-            "Annualized Volatility (%)": round(annual_vol * 100, 2),
-            "Sharpe Ratio": round(sharpe, 3),
-            "Max Drawdown (%)": round(max_dd * 100, 2),
+            "Annualized Volatility (%)": round(annual_volatility * 100, 2),
+            "Sharpe Ratio": round(sharpe_ratio, 3),
+            "Sortino Ratio": round(sortino_ratio, 3),
+            "Max Drawdown (%)": round(max_drawdown * 100, 2),
+            "Calmar Ratio": round(calmar_ratio, 3),
             "Start Date": str(equity.index[0].date()),
             "End Date": str(equity.index[-1].date()),
         }
 
+        if return_equity:
+            return metrics, equity
+        return metrics
+
     def _compute_equity_curve(self, history: pd.DataFrame) -> pd.Series:
         """
-        Computes NAV over time using portfolio weights and daily returns.
+        Compute NAV over time using daily portfolio returns.
 
         Assumes:
         - 'portfolio': pd.Series of weights
-        - 'prices': pd.Series of close prices
+        - 'prices': pd.Series of prices (same index as weights)
         """
-        # Build a DataFrame of all prices
         price_df = pd.DataFrame([row["prices"] for _, row in history.iterrows()])
         price_df.index = history.index
-        price_returns = price_df.pct_change(fill_method=None).fillna(0)
+        daily_returns = price_df.pct_change(fill_method=None).fillna(0)
 
-        # Compute daily portfolio return = sum(weights * price returns)
-        returns = []
-        for i, row in history.iterrows():
+        nav_returns = []
+        for i, (date, row) in enumerate(history.iterrows()):
             weights = row["portfolio"]
-            if i == history.index[0]:
-                returns.append(0.0)  # no return on first day
+            if i == 0:
+                nav_returns.append(0.0)  # no return on first day
                 continue
-            ret = (weights * price_returns.loc[i]).sum()
-            returns.append(ret)
+            ret = (weights * daily_returns.loc[date]).sum()
+            nav_returns.append(ret)
 
-        # Compute NAV from returns
-        equity_curve = pd.Series(returns, index=history.index).add(1).cumprod()
+        equity_curve = pd.Series(nav_returns, index=history.index).add(1).cumprod()
         equity_curve *= self.initial_value
         equity_curve.name = "NetAssetValue"
         return equity_curve
@@ -69,3 +87,11 @@ class PerformanceMetrics:
         peak = series.expanding(min_periods=1).max()
         drawdown = (series - peak) / peak
         return drawdown.min()
+
+    def _sortino_ratio(self, returns: pd.Series) -> float:
+        downside_returns = returns[returns < 0]
+        downside_vol = downside_returns.std() * np.sqrt(252)
+        if downside_vol == 0:
+            return 0.0
+        mean_excess_return = returns.mean() * 252 - self.risk_free_rate
+        return mean_excess_return / downside_vol

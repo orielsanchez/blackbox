@@ -11,11 +11,7 @@ class EMACrossoverFeature(BaseFeatureGenerator):
 
     def generate(self, data: pd.DataFrame) -> pd.DataFrame:
         close = data["close"]
-        short_ema = close.groupby(level=1).transform(
-            lambda x: x.ewm(span=self.short).mean()
-        )
-        long_ema = close.groupby(level=1).transform(
-            lambda x: x.ewm(span=self.long).mean()
-        )
+        short_ema = close.groupby(level=1).transform(lambda x: x.ewm(span=self.short).mean())
+        long_ema = close.groupby(level=1).transform(lambda x: x.ewm(span=self.long).mean())
         diff = (short_ema - long_ema).rename(f"ema_{self.short}_{self.long}_diff")
         return diff.to_frame()
