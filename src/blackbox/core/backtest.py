@@ -1,16 +1,19 @@
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
+import matplotlib.pyplot as plt
 import pandas as pd
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (BarColumn, Progress, TextColumn, TimeElapsedColumn,
+                           TimeRemainingColumn)
 
-from blackbox.core.execution_loop import DailyLog, TradeResult, reconcile_trades, simulate_execution
-from blackbox.models.interfaces import (
-    AlphaModel,
-    ExecutionModel,
-    PortfolioConstructionModel,
-    RiskModel,
-    TransactionCostModel,
-)
+from blackbox.config.loader import dump_config
+from blackbox.config.schema import BacktestConfig
+from blackbox.core.execution_loop import (DailyLog, TradeResult,
+                                          reconcile_trades, simulate_execution)
+from blackbox.models.interfaces import (AlphaModel, ExecutionModel,
+                                        PortfolioConstructionModel, RiskModel,
+                                        TransactionCostModel)
 from blackbox.models.tracker import PositionTracker
 from blackbox.research.metrics import PerformanceMetrics
 from blackbox.utils.context import get_feature_matrix, get_logger
@@ -20,6 +23,7 @@ from blackbox.utils.logger import RichLogger
 class BacktestEngine:
     def __init__(
         self,
+        config: BacktestConfig,
         alpha: AlphaModel,
         risk: RiskModel,
         cost: TransactionCostModel,
@@ -31,7 +35,9 @@ class BacktestEngine:
         slippage: float = 0.001,
         initial_equity: float = 1_000_000,
         risk_free_rate: float = 0.0,
+        plot_equity: bool = True,
     ):
+        self.config = config
         self.alpha = alpha
         self.risk = risk
         self.cost = cost
@@ -41,10 +47,15 @@ class BacktestEngine:
         self.tracker = position_tracker or PositionTracker()
         self.min_holding = min_holding_period
         self.slippage = slippage
-        self.history: list[DailyLog] = []
+        self.daily_logs: list[DailyLog] = []
 
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        self.output_dir = Path("results") / config.run_id / timestamp
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.initial_equity = initial_equity
         self.risk_free_rate = risk_free_rate
+        self.plot_equity = plot_equity
+        dump_config(self.config, self.output_dir / "config.yaml")
 
     def run(self, data: list[dict]) -> pd.DataFrame:
         full_feature_matrix = get_feature_matrix()
@@ -63,14 +74,18 @@ class BacktestEngine:
                 prices: pd.Series = snapshot["prices"]
 
                 if not self._has_features_for_date(full_feature_matrix, date):
-                    self.logger.warning(f"{date.date()} | No features available — skipping")
+                    self.logger.warning(
+                        f"{date.date()} | No features available — skipping"
+                    )
                     progress.advance(task)
                     continue
 
                 try:
                     snapshot["feature_vector"] = full_feature_matrix.loc[date]
                 except KeyError:
-                    self.logger.warning(f"{date.date()} | Feature lookup failed — skipping")
+                    self.logger.warning(
+                        f"{date.date()} | Feature lookup failed — skipping"
+                    )
                     progress.advance(task)
                     continue
 
@@ -88,17 +103,28 @@ class BacktestEngine:
                     self.logger.error(f"❌ {date.date()} | Simulation failed: {e}")
 
                 capital = snapshot.get("capital", 0)
-                progress.update(task, advance=1, description=f"{date.date()} | ${capital:,.2f}")
+                progress.update(
+                    task, advance=1, description=f"{date.date()} | ${capital:,.2f}"
+                )
 
-        if not self.history:
+        if not self.daily_logs:
             self.logger.error(
                 "❌ No backtest logs recorded — likely due to missing data or capital."
             )
             return pd.DataFrame()
 
-        return pd.DataFrame([log.__dict__ for log in self.history]).set_index("date")
+        if self.plot_equity:
+            from blackbox.utils.plotting import plot_equity_curve
 
-    def _has_features_for_date(self, features: pd.DataFrame, date: pd.Timestamp) -> bool:
+            plot_equity_curve(
+                self.daily_logs, run_id=self.config.run_id, output_dir=self.output_dir
+            )
+
+        return pd.DataFrame([log.__dict__ for log in self.daily_logs]).set_index("date")
+
+    def _has_features_for_date(
+        self, features: pd.DataFrame, date: pd.Timestamp
+    ) -> bool:
         return date in features.index.get_level_values("date")
 
     def _simulate_day(self, date: pd.Timestamp, snapshot: dict, prices: pd.Series):
@@ -138,20 +164,26 @@ class BacktestEngine:
         )
 
         self._log_portfolio_state("Executed trades", date, trade_result.executed)
-        self.logger.debug(f"{date.date()} | Execution feedback: {trade_result.feedback}")
+        self.logger.debug(
+            f"{date.date()} | Execution feedback: {trade_result.feedback}"
+        )
 
-        filtered_trades = self.tracker.filter(trade_result.executed, date, self.min_holding)
+        filtered_trades = self.tracker.filter(
+            trade_result.executed, date, self.min_holding
+        )
         self._log_portfolio_state("Filtered trades", date, filtered_trades)
 
         self.execution.record(filtered_trades, trade_result.feedback)
-        updated_portfolio = self.execution.update_portfolio(current_portfolio, filtered_trades)
+        updated_portfolio = self.execution.update_portfolio(
+            current_portfolio, filtered_trades
+        )
 
         self.tracker.update(updated_portfolio, date)
         self.portfolio.feedback_from_execution(trade_result.feedback)
 
         self.logger.info(f"{date.date()} | {len(filtered_trades)} trades executed")
 
-        self.history.append(
+        self.daily_logs.append(
             DailyLog(
                 date=date,
                 prices=prices.copy(),
@@ -167,11 +199,11 @@ class BacktestEngine:
             self.logger.debug(f"{date.date()} | {label}: {nonzero.to_dict()}")
 
     def generate_metrics(self, return_equity: bool = False) -> dict:
-        if not self.history:
-            self.logger.error("❌ Cannot compute metrics — no history available.")
+        if not self.daily_logs:
+            self.logger.error("❌ Cannot compute metrics — no daily logs available.")
             return {}
 
-        df = pd.DataFrame([log.__dict__ for log in self.history]).set_index("date")
+        df = pd.DataFrame([log.__dict__ for log in self.daily_logs]).set_index("date")
 
         metrics = PerformanceMetrics(
             initial_value=self.initial_equity,

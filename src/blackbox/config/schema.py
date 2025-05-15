@@ -37,8 +37,13 @@ class BacktestConfig:
     tx_cost_model: ModelConfig
     portfolio_model: ModelConfig
     execution_model: ModelConfig
+
+    # Runtime options
     min_holding_period: int = 0
     settlement_delay: int = 2
+    initial_portfolio_value: float = 1_000_000
+    plot_equity: bool = True
+    risk_free_rate: float = 0.0
 
     # Logging
     log_level: str = "INFO"

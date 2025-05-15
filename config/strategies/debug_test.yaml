@@ -1,9 +1,16 @@
+
 run_id: "debug_microtest"
 start_date: "2022-12-01"
 end_date: "2023-01-10"
 
+# === Logging ===
+log_level: "DEBUG"
+log_to_console: true
+log_to_file: true
+structured_logging: false
+
 # === Universe ===
-universe_file: "universe/micro_universe.csv"  # ⬅️ Create a CSV with 3-5 tickers
+universe_file: "universe/micro_universe.csv"
 
 # === Output ===
 output_dir: "results/debug_microtest"
@@ -19,14 +26,15 @@ data:
 alpha_model:
   name: "mean_reversion"
   params:
-    window: 5
     threshold: 0.5
     features:
-      - name: "zscore_price"
-        params: { period: 5 }
-      - name: "bollinger_band"
-        params: { period: 5, std_dev: 2.0 }
-
+      - name: zscore_price
+        params:
+          period: 5
+      - name: bollinger_band
+        params:
+          period: 5
+          std_dev: 2.0
 
 # === Risk Model ===
 risk_model:
@@ -44,13 +52,16 @@ tx_cost_model:
     impact_coefficient: 0.00005
     min_commission: 1.0
 
-# === Portfolio Construction ===
+# === Portfolio Construction Model ===
 portfolio_model:
   name: "volatility_scaled"
   params:
     vol_lookback: 5
     risk_target: 0.01
     max_weight: 0.4
+    min_notional: 10.0
+    min_price: 1.0
+    max_dollar_per_symbol: 50_000
 
 # === Execution Model ===
 execution_model:
@@ -66,9 +77,5 @@ execution_model:
 # === Constraints ===
 min_holding_period: 2
 settlement_delay: 1
-
-# === Logging ===
-log_level: "DEBUG"
-log_to_console: true
-log_to_file: true
-structured_logging: false
+window: 5
+rolling: true
