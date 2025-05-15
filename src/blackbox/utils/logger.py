@@ -14,17 +14,16 @@ class RichLogger:
         log_to_console: bool = True,
         log_to_file: bool = True,
         log_file_path: str = "results/logs/blackbox.log",
-        structured: bool = False,
-        module_filter: str = "",  # e.g., "blackbox.core"
+        structured: bool = True,
+        module_filter: str = "",
     ):
         self.console = Console()
         self.logger = logging.getLogger(name)
 
         level_enum = getattr(logging, level.upper())
         self.logger.setLevel(level_enum)
-        self.logger.handlers.clear()  # prevent duplicates
+        self.logger.handlers.clear()  # avoid duplicate handlers
 
-        # Optional module name filtering
         if module_filter:
 
             class ModuleFilter(logging.Filter):
@@ -33,35 +32,36 @@ class RichLogger:
 
             self.logger.addFilter(ModuleFilter())
 
-        # Formatter
-        formatter = (
-            logging.Formatter(
-                "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        # Structured vs raw formatter
+        if structured:
+            formatter = logging.Formatter(
+                fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
-            if structured
-            else logging.Formatter("%(message)s")
-        )
+        else:
+            formatter = logging.Formatter("%(message)s")
 
-        # Console handler
+        # Console handler using rich
         if log_to_console:
-            console_handler = RichHandler(
+            rich_handler = RichHandler(
                 console=self.console,
                 markup=True,
                 rich_tracebacks=True,
                 show_path=False,
-                log_time_format="%H:%M:%S",
+                show_level=True,
+                show_time=False,  # we handle time via formatter
             )
-            console_handler.setLevel(level_enum)
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
+            rich_handler.setLevel(level_enum)
+            rich_handler.setFormatter(formatter)
+            self.logger.addHandler(rich_handler)
 
-        # File handler
+        # File handler with timestamped filename
         if log_to_file:
             Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_path = Path(log_file_path).with_name(f"{Path(log_file_path).stem}_{timestamp}.log")
-            file_handler = logging.FileHandler(file_path)
+            file_name = f"{Path(log_file_path).stem}_{timestamp}.log"
+            full_path = Path(log_file_path).with_name(file_name)
+            file_handler = logging.FileHandler(full_path)
             file_handler.setLevel(level_enum)
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)
