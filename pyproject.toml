@@ -9,11 +9,14 @@ license = "MIT"
 dependencies = [
     "dacite>=1.9.2",
     "duckdb>=1.2.2",
+    "fastparquet>=2024.11.0",
     "matplotlib>=3.10.3",
     "numpy>=2.2.5",
     "pandas>=2.2.3",
+    "pyarrow>=20.0.0",
     "python-dotenv>=1.1.0",
     "pyyaml>=6.0.2",
+    "requests>=2.32.3",
     "rich>=14.0.0",
     "ruff>=0.1.11",
 ]

@@ -14,74 +14,73 @@ class RichLogger:
         log_to_console: bool = True,
         log_to_file: bool = True,
         log_file_path: str = "results/logs/blackbox.log",
-        structured: bool = False,
-        module_filter: str = "",  # e.g., "blackbox.core"
+        structured: bool = True,
+        module_filter: str = "",
     ):
         self.console = Console()
-        self.logger = logging.getLogger(name)
+        self._logger = logging.getLogger(name)
+        self._logger.setLevel(getattr(logging, level.upper()))
+        self._logger.handlers.clear()  # prevent duplicate logs on reload
 
-        level_enum = getattr(logging, level.upper())
-        self.logger.setLevel(level_enum)
-        self.logger.handlers.clear()  # prevent duplicates
-
-        # Optional module name filtering
         if module_filter:
 
             class ModuleFilter(logging.Filter):
                 def filter(self, record: logging.LogRecord) -> bool:
                     return record.name.startswith(module_filter)
 
-            self.logger.addFilter(ModuleFilter())
+            self._logger.addFilter(ModuleFilter())
 
         # Formatter
         formatter = (
             logging.Formatter(
-                "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+                fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
             if structured
             else logging.Formatter("%(message)s")
         )
 
-        # Console handler
+        # Console output via rich
         if log_to_console:
             console_handler = RichHandler(
                 console=self.console,
                 markup=True,
                 rich_tracebacks=True,
                 show_path=False,
-                log_time_format="%H:%M:%S",
+                show_level=True,
+                show_time=False,
             )
-            console_handler.setLevel(level_enum)
+            console_handler.setLevel(self._logger.level)
             console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
+            self._logger.addHandler(console_handler)
 
-        # File handler
+        # Optional file logging
         if log_to_file:
             Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_path = Path(log_file_path).with_name(
+            full_name = Path(log_file_path).with_name(
                 f"{Path(log_file_path).stem}_{timestamp}.log"
             )
-            file_handler = logging.FileHandler(file_path)
-            file_handler.setLevel(level_enum)
+            file_handler = logging.FileHandler(full_name)
+            file_handler.setLevel(self._logger.level)
             file_handler.setFormatter(formatter)
-            self.logger.addHandler(file_handler)
+            self._logger.addHandler(file_handler)
 
-    def info(self, msg: str):
-        self.logger.info(msg)
+    # Drop-in replacements with args/kwargs
+    def debug(self, msg: str, *args, **kwargs):
+        self._logger.debug(msg, *args, **kwargs)
 
-    def warn(self, msg: str):
-        self.logger.warning(msg)
+    def info(self, msg: str, *args, **kwargs):
+        self._logger.info(msg, *args, **kwargs)
 
-    def error(self, msg: str):
-        self.logger.error(msg)
+    def warning(self, msg: str, *args, **kwargs):
+        self._logger.warning(msg, *args, **kwargs)
 
-    def debug(self, msg: str):
-        self.logger.debug(msg)
+    def error(self, msg: str, *args, **kwargs):
+        self._logger.error(msg, *args, **kwargs)
 
-    def exception(self, msg: str):
-        self.logger.exception(msg)
+    def exception(self, msg: str, *args, **kwargs):
+        self._logger.exception(msg, *args, **kwargs)
 
-    def get_logger(self):
-        return self.logger
+    def get_logger(self) -> logging.Logger:
+        return self._logger

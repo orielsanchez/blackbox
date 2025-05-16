@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from pathlib import Path
 
 import yaml
@@ -12,3 +13,8 @@ def load_config(path: str | Path) -> BacktestConfig:
         raw = yaml.safe_load(f)
 
     return from_dict(data_class=BacktestConfig, data=raw)
+
+
+def dump_config(config: BacktestConfig, path: Path):
+    with open(path, "w") as f:
+        yaml.safe_dump(asdict(config), f)

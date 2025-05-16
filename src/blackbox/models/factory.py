@@ -36,7 +36,9 @@ def _build_model(config_entry, model_dir: str, interface_cls: Type[Any]) -> Any:
         ) from e
 
 
-def build_models(config: BacktestConfig) -> tuple[
+def build_models(
+    config: BacktestConfig,
+) -> tuple[
     AlphaModel,
     RiskModel,
     TransactionCostModel,

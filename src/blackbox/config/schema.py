@@ -1,11 +1,21 @@
-from dataclasses import dataclass
-from typing import Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class FeatureSpec:
+    name: str
+    params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class ModelConfig:
     name: str
-    params: Optional[Dict] = None
+    params: Optional[Dict[str, Any]] = field(default_factory=dict)
+
+    def get_feature_spec(self) -> List[FeatureSpec]:
+        features = self.params.get("features", [])
+        return [FeatureSpec(**f) for f in features]
 
 
 @dataclass
@@ -13,6 +23,8 @@ class DataConfig:
     db_path: str
     rolling: bool = False
     window: int = 20
+    cache_path: Optional[str] = None
+    force_reload: bool = False
 
 
 @dataclass
@@ -27,8 +39,15 @@ class BacktestConfig:
     tx_cost_model: ModelConfig
     portfolio_model: ModelConfig
     execution_model: ModelConfig
+
+    # Core config params
+    initial_portfolio_value: float = 1_000
+
+    # Runtime options
     min_holding_period: int = 0
     settlement_delay: int = 2
+    plot_equity: bool = True
+    risk_free_rate: float = 0.0
 
     # Logging
     log_level: str = "INFO"
