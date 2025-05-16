@@ -37,7 +37,9 @@ class PerformanceMetrics:
 
         sortino_ratio = self._sortino_ratio(returns)
         max_drawdown = self._max_drawdown(equity)
-        calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
+        calmar_ratio = (
+            annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
+        )
 
         metrics = {
             "Start Equity": round(equity.iloc[0], 2),

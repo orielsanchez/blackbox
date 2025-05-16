@@ -18,6 +18,12 @@ class AlphaModel(Protocol):
         Output: pd.Series [symbol → signal]
         """
 
+    def predict(self, snapshot: dict) -> pd.Series:
+        """
+        ML-compatible alias for generate method.
+        Has identical inputs and outputs as generate.
+        """
+
 
 @runtime_checkable
 class RiskModel(Protocol):

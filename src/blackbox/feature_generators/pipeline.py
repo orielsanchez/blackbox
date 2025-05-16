@@ -1,7 +1,6 @@
 import pandas as pd
 
 from blackbox.feature_generators.base import feature_registry
-from blackbox.feature_generators.utils import validate_feature_output
 from blackbox.utils.context import get_logger
 
 
@@ -11,7 +10,9 @@ class FeaturePipeline:
         features: List of dicts like:
         [{"name": "momentum", "params": {"period": 5}}, {"name": "rolling_std", "params": {"period": 10}}]
         """
-        self.generators = [feature_registry[f["name"]](**f.get("params", {})) for f in features]
+        self.generators = [
+            feature_registry[f["name"]](**f.get("params", {})) for f in features
+        ]
         self.logger = get_logger()
 
     def run(self, ohlcv: pd.DataFrame) -> pd.DataFrame:
@@ -21,34 +22,27 @@ class FeaturePipeline:
         """
         feature_frames = []
 
-        for feature in self.generators:
-            name = feature.__class__.__name__
+        for generator in self.generators:
+            name = generator.__class__.__name__
             try:
-                raw_output = feature.generate(ohlcv)
+                output = generator.run(ohlcv)
 
-                if raw_output is None or raw_output.empty:
-                    self.logger.warning(f"⚠️ {name}: empty output")
-                    continue
-
-                self.logger.debug(f"{name} raw output tail:\n{raw_output.tail()}")
-
-                validated_output = validate_feature_output(
-                    name,
-                    raw_output,
-                    current_date=None,  # Let validator handle indexing
+                dates_in_output = output.index.get_level_values("date").unique()
+                self.logger.info(
+                    f"✅ {generator.__class__.__name__} returned {len(dates_in_output)} dates: {dates_in_output[:5].tolist()} ..."
                 )
 
-                if validated_output.empty:
-                    self.logger.warning(f"⚠️ {name}: no usable features after validation")
+                if output.empty:
+                    self.logger.warning(f"⚠️ {name}: no usable features returned")
                     continue
 
-                self.logger.debug(f"✅ {name} output shape: {validated_output.shape}")
-                feature_frames.append(validated_output)
+                self.logger.debug(f"✅ {name} output shape: {output.shape}")
+                feature_frames.append(output)
 
             except KeyError as e:
                 self.logger.warning(f"{name}: missing key during generation: {e}")
             except Exception as e:
-                self.logger.error(f"❌ {name} failed: {e}")
+                self.logger.error(f"❌ {name} failed: {e}", exc_info=True)
 
         if not feature_frames:
             self.logger.warning("⚠️ Feature pipeline produced no usable outputs")

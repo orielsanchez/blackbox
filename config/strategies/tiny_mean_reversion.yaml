@@ -1,19 +1,15 @@
-run_id: "sinclair_mean_reversion_2024"
-start_date: "2023-05-01"
+run_id: "tiny_mean_reversion"
+start_date: "2024-05-01"
 end_date: "2025-05-01"
 
 # === Logging ===
-log_level: "INFO"
+log_level: "DEBUG"  
 log_to_console: true
 log_to_file: true
 structured_logging: true
 
 # === Universe ===
-universe_file: "universe/top_2000_by_market_cap.csv"
-
-# === Output ===
-output_dir: "results/sinclair_mean_reversion_2025"
-diagnostics_dir: "results/sinclair_mean_reversion_2025/diagnostics"
+universe_file: "universe/tiny_universe.csv"
 
 # === Data ===
 data:
@@ -23,11 +19,14 @@ data:
   cache_path: auto
   force_reload: false
 
+# === Portfolio Value ===
+initial_portfolio_value: 1000  # SINGLE SOURCE OF TRUTH - used for initial_equity and execution model
+
 # === Alpha Model ===
 alpha_model:
   name: "mean_reversion"
   params:
-    threshold: 0.0001
+    threshold: 0.2
     features:
       - name: zscore_price
         params:
@@ -36,7 +35,6 @@ alpha_model:
         params:
           period: 20
           std_dev: 2.0
-
 
 # === Risk Model ===
 risk_model:
@@ -50,36 +48,34 @@ risk_model:
 tx_cost_model:
   name: "quadratic_market_impact"
   params:
-    commission_rate: 0.0001
-    impact_coefficient: 0.00005
-    min_commission: 1.0
-
+    commission_rate: 0.000001  
+    impact_coefficient: 0.0000005 
+    min_commission: 0.01  
 
 # === Portfolio Construction Model ===
 portfolio_model:
   name: "volatility_scaled"
   params:
-    vol_lookback: 20     # normalize by 20-day vol
-    risk_target: 0.1    # max 2% volatility per asset
-    max_weight: 0.2
+    vol_lookback: 20
+    risk_target: 0.5
+    max_weight: 0.25
     min_notional: 1.0
     min_price: 1.0
-    max_dollar_per_symbol: 100_000
+    max_dollar_per_symbol: 500
 
 # === Execution Model ===
 execution_model:
   name: "market"
   params:
-    slippage: 0.0002
+    slippage: 0.0001      
     commission: 0.0001
-    initial_portfolio_value: 1_000_000
+    # Remove initial_portfolio_value - will use the global one
     fractional: true
     allow_shorts: true
-    min_notional: 1.0
+    min_notional: 5.0
 
-# === Constraints ===
-min_holding_period: 3     # must hold for 3 business days
-settlement_delay: 2       # T+2 simulation
+# === Other Constraints ===
+min_holding_period: 1
+settlement_delay: 1
 window: 20
 rolling: true
-

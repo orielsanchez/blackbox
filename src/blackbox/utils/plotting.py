@@ -8,8 +8,6 @@ from blackbox.core.execution_loop import DailyLog
 # from pathlib import Path
 
 
-
-
 def plot_equity_curve(
     logs: list[DailyLog], run_id: str = "default", output_dir: str = "results"
 ):

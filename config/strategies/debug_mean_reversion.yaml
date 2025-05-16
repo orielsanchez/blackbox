@@ -3,13 +3,13 @@ start_date: "2023-05-01"
 end_date: "2025-05-01"
 
 # === Logging ===
-log_level: "INFO"
+log_level: "WARNING"
 log_to_console: true
 log_to_file: true
 structured_logging: true
 
 # === Universe ===
-universe_file: "universe/top_2000_by_market_cap.csv"
+universe_file: "universe/debug_universe.csv"
 
 # === Output ===
 output_dir: "results/sinclair_mean_reversion_2025"

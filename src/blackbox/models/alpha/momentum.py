@@ -17,6 +17,10 @@ class MomentumAlphaModel(AlphaModel):
             ]
         )
 
+    def predict(self, snapshot: dict) -> pd.Series:
+        """Alias for generate to support standard ML interface"""
+        return self.generate(snapshot)
+
     def generate(self, snapshot: dict) -> pd.Series:
         """
         snapshot = {
@@ -40,7 +44,9 @@ class MomentumAlphaModel(AlphaModel):
             return pd.Series(dtype=float)
 
         # Combine signals: weighted average
-        score = 0.4 * f["momentum_5d"] + 0.4 * f["momentum_20d"] + 0.2 * f["ema_10_50_diff"]
+        score = (
+            0.4 * f["momentum_5d"] + 0.4 * f["momentum_20d"] + 0.2 * f["ema_10_50_diff"]
+        )
 
         # Optional: Zero out weak signals
         score = score.where(score.abs() > 0.01, 0)

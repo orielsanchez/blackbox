@@ -23,6 +23,8 @@ class DataConfig:
     db_path: str
     rolling: bool = False
     window: int = 20
+    cache_path: Optional[str] = None
+    force_reload: bool = False
 
 
 @dataclass
@@ -38,10 +40,12 @@ class BacktestConfig:
     portfolio_model: ModelConfig
     execution_model: ModelConfig
 
+    # Core config params
+    initial_portfolio_value: float = 1_000
+
     # Runtime options
     min_holding_period: int = 0
     settlement_delay: int = 2
-    initial_portfolio_value: float = 1_000_000
     plot_equity: bool = True
     risk_free_rate: float = 0.0
 

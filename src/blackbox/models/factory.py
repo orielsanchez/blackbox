@@ -1,13 +1,9 @@
 from typing import Any, Type
 
 from blackbox.config.schema import BacktestConfig
-from blackbox.models.interfaces import (
-    AlphaModel,
-    ExecutionModel,
-    PortfolioConstructionModel,
-    RiskModel,
-    TransactionCostModel,
-)
+from blackbox.models.interfaces import (AlphaModel, ExecutionModel,
+                                        PortfolioConstructionModel, RiskModel,
+                                        TransactionCostModel)
 from blackbox.models.registry_dynamic import discover_models
 
 # Registry cache: prevent duplicate discovery
@@ -27,13 +23,17 @@ def _build_model(config_entry, model_dir: str, interface_cls: Type[Any]) -> Any:
 
     if name not in model_registry:
         available = list(model_registry.keys())
-        raise ValueError(f"❌ Model '{name}' not found in '{model_dir}'. Available: {available}")
+        raise ValueError(
+            f"❌ Model '{name}' not found in '{model_dir}'. Available: {available}"
+        )
 
     model_cls = model_registry[name]
     try:
         return model_cls(**params)
     except Exception as e:
-        raise RuntimeError(f"⚠️ Failed to instantiate model '{name}' in '{model_dir}': {e}") from e
+        raise RuntimeError(
+            f"⚠️ Failed to instantiate model '{name}' in '{model_dir}': {e}"
+        ) from e
 
 
 def build_models(
@@ -47,7 +47,9 @@ def build_models(
 ]:
     alpha = _build_model(config.alpha_model, "src/blackbox/models/alpha", AlphaModel)
     risk = _build_model(config.risk_model, "src/blackbox/models/risk", RiskModel)
-    cost = _build_model(config.tx_cost_model, "src/blackbox/models/cost", TransactionCostModel)
+    cost = _build_model(
+        config.tx_cost_model, "src/blackbox/models/cost", TransactionCostModel
+    )
     portfolio = _build_model(
         config.portfolio_model,
         "src/blackbox/models/portfolio",
