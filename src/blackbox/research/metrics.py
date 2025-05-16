@@ -37,9 +37,7 @@ class PerformanceMetrics:
 
         sortino_ratio = self._sortino_ratio(returns)
         max_drawdown = self._max_drawdown(equity)
-        calmar_ratio = (
-            annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
-        )
+        calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
 
         metrics = {
             "Start Equity": round(equity.iloc[0], 2),
@@ -60,28 +58,10 @@ class PerformanceMetrics:
         return metrics
 
     def _compute_equity_curve(self, history: pd.DataFrame) -> pd.Series:
-        """
-        Compute NAV over time using daily portfolio returns.
+        if "equity" not in history.columns:
+            raise ValueError("Missing 'equity' column in backtest history")
 
-        Assumes:
-        - 'portfolio': pd.Series of weights
-        - 'prices': pd.Series of prices (same index as weights)
-        """
-        price_df = pd.DataFrame([row["prices"] for _, row in history.iterrows()])
-        price_df.index = history.index
-        daily_returns = price_df.pct_change(fill_method=None).fillna(0)
-
-        nav_returns = []
-        for i, (date, row) in enumerate(history.iterrows()):
-            weights = row["portfolio"]
-            if i == 0:
-                nav_returns.append(0.0)  # no return on first day
-                continue
-            ret = (weights * daily_returns.loc[date]).sum()
-            nav_returns.append(ret)
-
-        equity_curve = pd.Series(nav_returns, index=history.index).add(1).cumprod()
-        equity_curve *= self.initial_value
+        equity_curve = history["equity"].astype(float).copy()
         equity_curve.name = "NetAssetValue"
         return equity_curve
 

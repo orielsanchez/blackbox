@@ -1,4 +1,6 @@
-from typing import Dict
+"""Base AlphaModel implementation that supports verbose mode."""
+
+from typing import Dict, List, Optional, Union
 
 import pandas as pd
 

@@ -1,7 +1,7 @@
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
@@ -23,6 +23,11 @@ from blackbox.utils.logger import RichLogger
 
 
 class BacktestEngine:
+    """Daily‑step back‑test engine orchestrating Alpha → Risk → Cost → Portfolio → Execution."""
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
     def __init__(
         self,
         config: BacktestConfig,
@@ -33,12 +38,14 @@ class BacktestEngine:
         execution: ExecutionModel,
         logger: Optional[RichLogger] = None,
         position_tracker: Optional[PositionTracker] = None,
+        *,
         min_holding_period: int = 0,
         slippage: float = 0.001,
-        initial_equity: float = None,
+        initial_equity: Optional[float] = None,
         risk_free_rate: float = 0.0,
         plot_equity: bool = True,
-    ):
+        verbose: bool = False,
+    ) -> None:
         self.config = config
         self.alpha = alpha
         self.risk = risk
@@ -48,431 +55,592 @@ class BacktestEngine:
         self.logger = logger or get_logger()
         self.tracker = position_tracker or PositionTracker()
 
+        # Hyper‑parameters
         self.min_holding = min_holding_period
         self.slippage = slippage
         self.initial_equity = initial_equity or config.initial_portfolio_value
         self.risk_free_rate = risk_free_rate
         self.plot_equity = plot_equity
-        self.daily_logs: list[DailyLog] = []
-        # Set the execution model's portfolio value to match
-        if hasattr(execution, "portfolio_value"):
-            execution.portfolio_value = self.initial_equity
-        if hasattr(execution, "current_cash"):
-            execution.current_cash = self.initial_equity
+        self.verbose = verbose
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        self.output_dir = Path("results") / config.run_id / timestamp
+        # Runtime series
+        self.daily_logs: List[DailyLog] = []
+        self.equity_by_date: dict[pd.Timestamp, float] = {}
+        self.cash_by_date: dict[pd.Timestamp, float] = {}
+        self.drawdown_by_date: dict[pd.Timestamp, float] = {}
+        self.daily_pnl: dict[pd.Timestamp, float] = {}
+        self.max_equity = self.initial_equity
+
+        self._setup_execution_models()
+        self._setup_output_directory()
+
+    # ------------------------------------------------------------------
+    # Setup helpers
+    # ------------------------------------------------------------------
+    def _setup_execution_models(self) -> None:
+        if hasattr(self.execution, "portfolio_value"):
+            self.execution.portfolio_value = self.initial_equity
+        if hasattr(self.execution, "current_cash"):
+            self.execution.current_cash = self.initial_equity
+            self.cash_by_date[pd.Timestamp.now().normalize()] = self.initial_equity
+
+    def _setup_output_directory(self) -> None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        self.output_dir = Path("results") / self.config.run_id / ts
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        dump_config(config, self.output_dir / "config.yaml")
+        dump_config(self.config, self.output_dir / "config.yaml")
 
-    def run(self, data: list[dict], feature_matrix: Optional[pd.DataFrame] = None) -> pd.DataFrame:
-        # Track account equity by date
-        self.equity_by_date = {}
-
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def run(self, data: List[Dict], feature_matrix: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         self.logger.info(f"📊 Backtest start | {len(data)} trading days")
 
-        if feature_matrix is None:
-            self.logger.warning("⚠️ No feature matrix passed — using global context")
-            feature_matrix = get_feature_matrix()
+        fm = self._prepare_feature_matrix(feature_matrix)
+        fm_dates, min_fm_date, _ = self._analyze_features(data, fm)
+        ohlcv_df = self._process_ohlcv_data(data)
+        self._fix_missing_ohlcv(data, ohlcv_df)
 
-        # Ensure proper MultiIndex
-        if feature_matrix.index.names != ["date", "symbol"]:
-            feature_matrix = (
-                feature_matrix.reset_index()
-                .assign(date=lambda df: pd.to_datetime(df["date"]).dt.normalize())
-                .set_index(["date", "symbol"])
-                .sort_index()
-            )
-
-        # Force MultiIndex to be unique, sorted, and correct type
-        feature_matrix.index = pd.MultiIndex.from_tuples(
-            [(pd.Timestamp(date), symbol) for date, symbol in feature_matrix.index],
-            names=["date", "symbol"],
-        )
-        feature_matrix = feature_matrix.sort_index()
-        assert feature_matrix.index.is_unique, "Feature matrix index is not unique!"
-
-        # Safely sort unique dates
-        feature_dates = (
-            pd.to_datetime(feature_matrix.index.get_level_values("date"))
-            .normalize()
-            .unique()
-            .sort_values()
-        )
-
-        self.logger.info(
-            f"🕵️ Feature matrix covers {len(feature_dates)} dates | Sample: {feature_dates[:5]}"
-        )
-        self.logger.info(f"Feature matrix index sample: {feature_matrix.index[:5]}")
-        self.logger.info(
-            f"Feature matrix unique dates: {feature_matrix.index.get_level_values('date').unique()[:5]}"
-        )
-
-        # Defensive: Compare data dates and feature matrix dates
-        feature_matrix_dates = set(feature_matrix.index.get_level_values("date").unique())
-        data_dates = set(pd.to_datetime([snap["date"] for snap in data]).normalize().unique())
-        missing_in_features = sorted(data_dates - feature_matrix_dates)
-        if missing_in_features:
-            self.logger.warning(
-                f"⚠️ {len(missing_in_features)} dates in data but missing in feature matrix: {missing_in_features[:10]} ..."
-            )
-
-        # Determine warmup period based on when feature data becomes available
-        min_feature_date = min(feature_matrix_dates)
-        data_with_dates = [(pd.to_datetime(snap["date"]).normalize(), snap) for snap in data]
-        data_with_dates.sort(key=lambda x: x[0])  # Sort by date
-
-        # Determine the first date when we have feature data
-        warmup_days = sum(1 for date, _ in data_with_dates if date < min_feature_date)
-
-        if warmup_days > 0:
-            self.logger.info(
-                f"⏳ First {warmup_days} days are warmup (before {min_feature_date.date()})"
-            )
-
-        # Construct full OHLCV dataframe for easier lookups
-        # FIX: Handle the case where date column already exists in the index or DataFrame
-        frames = [
-            snap["ohlcv"]
-            for snap in data
-            if "ohlcv" in snap
-            and isinstance(snap["ohlcv"], pd.DataFrame)
-            and not snap["ohlcv"].empty
-        ]
-
-        if frames:
-            # Check the structure of the frames to determine how to process them
-            sample_frame = frames[0]
-            self.logger.debug(f"Sample OHLCV frame columns: {sample_frame.columns.tolist()}")
-            self.logger.debug(
-                f"Sample OHLCV frame index: {type(sample_frame.index)} - {sample_frame.index.names}"
-            )
-
-            # Correctly handle different possible structures
-            if isinstance(sample_frame.index, pd.MultiIndex) and sample_frame.index.names == [
-                "date",
-                "symbol",
-            ]:
-                # Already has the correct MultiIndex
-                self.logger.debug("OHLCV already has correct MultiIndex")
-                ohlcv_df = pd.concat(frames)
-            elif "date" in sample_frame.columns and "symbol" in sample_frame.columns:
-                # Flat DataFrame with date and symbol columns
-                self.logger.debug("OHLCV has date and symbol as columns")
-                ohlcv_df = pd.concat(frames).set_index(["date", "symbol"])
-            elif isinstance(sample_frame.index, pd.MultiIndex):
-                # Has a MultiIndex but different names
-                self.logger.debug(f"OHLCV has MultiIndex with names: {sample_frame.index.names}")
-                # Rename index levels if needed and combine
-                frames_with_correct_names = []
-                for frame in frames:
-                    if frame.index.names != ["date", "symbol"]:
-                        frame = frame.copy()
-                        frame.index.names = ["date", "symbol"]
-                    frames_with_correct_names.append(frame)
-                ohlcv_df = pd.concat(frames_with_correct_names)
-            else:
-                # Some other structure - try adding date from snapshot
-                self.logger.debug("OHLCV has non-standard structure, adding date from snapshots")
-                new_frames = []
-                for i, frame in enumerate(frames):
-                    date = pd.to_datetime(data[i]["date"]).normalize()
-                    if not isinstance(frame.index, pd.MultiIndex):
-                        # Assume index is symbol
-                        frame = frame.copy()
-                        frame.index.name = "symbol"
-                        frame = frame.reset_index()
-                        frame["date"] = date
-                        frame = frame.set_index(["date", "symbol"])
-                    new_frames.append(frame)
-                ohlcv_df = pd.concat(new_frames)
-
-            # Ensure all dates are normalized
-            if isinstance(ohlcv_df.index, pd.MultiIndex):
-                dates = ohlcv_df.index.get_level_values("date")
-                symbols = ohlcv_df.index.get_level_values("symbol")
-                ohlcv_df.index = pd.MultiIndex.from_tuples(
-                    [(pd.to_datetime(d).normalize(), s) for d, s in zip(dates, symbols)],
-                    names=["date", "symbol"],
-                )
-                ohlcv_df = ohlcv_df.sort_index()
-
-            self.logger.info(f"Combined OHLCV dataframe: {ohlcv_df.shape} rows")
-        else:
-            ohlcv_df = pd.DataFrame()
-            self.logger.warning("⚠️ No OHLCV data found in snapshots")
-
-        # Enhanced validation - check if each snapshot has required data
-        for i, snapshot in enumerate(data):
-            date = pd.to_datetime(snapshot["date"]).normalize()
-
-            # Debug: log what's in the snapshot
-            if i < 5:  # Just log first few days to avoid spamming
-                keys = list(snapshot.keys())
-                self.logger.debug(f"Snapshot {date.date()} contains keys: {keys}")
-
-                # Check if "prices" is present and has symbols
-                if "prices" in snapshot:
-                    num_prices = len(snapshot["prices"])
-                    self.logger.debug(f"Snapshot {date.date()} has {num_prices} price symbols")
-                else:
-                    self.logger.warning(f"Snapshot {date.date()} missing 'prices'")
-
-                # Check if "ohlcv" is present and properly structured
-                if "ohlcv" in snapshot:
-                    if isinstance(snapshot["ohlcv"], pd.DataFrame):
-                        num_ohlcv = len(snapshot["ohlcv"])
-                        self.logger.debug(
-                            f"Snapshot {date.date()} has {num_ohlcv} OHLCV rows, columns: {snapshot['ohlcv'].columns.tolist()}"
-                        )
-                    else:
-                        self.logger.warning(
-                            f"Snapshot {date.date()} has invalid 'ohlcv' type: {type(snapshot['ohlcv'])}"
-                        )
-                else:
-                    self.logger.warning(f"Snapshot {date.date()} missing 'ohlcv' key")
-
-            # Fix missing OHLCV if we have the combined dataframe
-            if (
-                "ohlcv" not in snapshot
-                or snapshot["ohlcv"] is None
-                or (isinstance(snapshot["ohlcv"], pd.DataFrame) and snapshot["ohlcv"].empty)
-            ):
-                if not ohlcv_df.empty:
-                    try:
-                        # Extract for this date
-                        date_data = ohlcv_df.loc[date]
-                        snapshot["ohlcv"] = date_data
-                        self.logger.debug(f"Added OHLCV data to snapshot for {date.date()}")
-                    except KeyError:
-                        self.logger.warning(f"No OHLCV data available for {date.date()}")
-
-        equity_so_far = self.initial_equity
-        any_trades_executed = False
-        positions_built = False
-
-        with Progress(
-            TextColumn("[bold green]📅 {task.description}"),
-            BarColumn(),
-            "[progress.percentage]{task.percentage:>3.0f}%",
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task("Backtesting", total=len(data))
-
-            for snapshot in data:
-                date = pd.to_datetime(snapshot["date"]).normalize()
-                prices = snapshot["prices"]
-
-                # Progress bar description shows current date and equity
-                if equity_so_far is not None:
-                    progress.update(task, description=f"{date.date()} | ${equity_so_far:.2f}")
-                else:
-                    progress.update(task, description=f"{date.date()}")
-
-                progress.advance(task)
-
-                try:
-                    self.logger.debug(
-                        f"feature_matrix.index.is_unique: {feature_matrix.index.is_unique}"
-                    )
-                    self.logger.debug(
-                        f"feature_matrix.index.is_monotonic_increasing: {feature_matrix.index.is_monotonic_increasing}"
-                    )
-
-                    # Check if in warmup period
-                    is_warmup = date < min_feature_date
-                    if is_warmup:
-                        self.logger.info(f"{date.date()} | 🔄 Warmup day (no features yet)")
-                        continue
-
-                    # Check if date exists in feature matrix
-                    if date not in feature_matrix_dates:
-                        self.logger.warning(
-                            f"{date.date()} | ⚠️ Date missing from feature matrix, skipping."
-                        )
-                        continue
-
-                    # Get features for this date
-                    try:
-                        snapshot["feature_vector"] = feature_matrix.loc[date]
-                    except KeyError as e:
-                        self.logger.error(f"KeyError for date {date}: {e}")
-                        raise
-
-                    # Calculate alpha signals
-                    signals = self.alpha.predict(snapshot)
-                    if signals.empty:
-                        self.logger.warning(f"{date.date()} | ⚠️ No alpha signals generated")
-                        continue
-
-                    top_signals = signals.sort_values(ascending=False).head(5).to_dict()
-                    self.logger.info(
-                        f"{date.date()} | Alpha: {len(signals)} signals | Top: {top_signals}"
-                    )
-
-                    # Build portfolio
-                    # Add capital to the snapshot
-                    snapshot["capital"] = equity_so_far
-                    positions = self.portfolio.construct(signals, snapshot)
-
-                    # Track if we've built positions (out of warmup)
-                    if not positions_built and not positions.empty:
-                        positions_built = True
-
-                    # Log exposure
-                    gross_exposure = abs(positions).sum() if isinstance(positions, pd.Series) else 0
-                    position_count = len(positions) if isinstance(positions, pd.Series) else 0
-                    self.logger.info(
-                        f"✅ Constructed {position_count} positions | Gross exposure: {gross_exposure:.2f}"
-                    )
-
-                    # Execute trades
-                    snapshot["capital"] = equity_so_far  # Ensure capital is in snapshot
-                    trades = self._simulate_day(date, snapshot, positions)
-
-                    # Track whether any trades have been executed
-                    if trades is not None and not any_trades_executed and not trades.empty:
-                        any_trades_executed = True
-
-                    # Update equity from internal tracking
-                    if date in self.equity_by_date:
-                        equity_so_far = self.equity_by_date[date]
-
-                    if equity_so_far <= 0:
-                        self.logger.error(f"Capital is zero or negative: ${equity_so_far:.2f}")
-                        raise ValueError("Capital is zero")
-
-                except Exception as e:
-                    self.logger.error(f"{date.date()} | ⚠️ Exception: {e}")
-                    self.logger.error(traceback.format_exc())
+        history_df = self._execute_backtest_days(data, fm, fm_dates, min_fm_date)
 
         if not self.daily_logs:
-            self.logger.error("❌ No trades executed — likely due to data issues")
+            self.logger.error("❌ No trades executed — likely data issues")
             return pd.DataFrame()
 
         self.logger.info(f"✅ Backtest completed | {len(self.daily_logs)} days recorded")
-
         if self.plot_equity:
-            from blackbox.utils.plotting import plot_equity_curve
+            self._plot_equity_curve()
+        return history_df
 
-            plot_equity_curve(self.daily_logs, self.config.run_id, self.output_dir)
-
-        return pd.DataFrame([log.__dict__ for log in self.daily_logs]).set_index("date")
-
-    def _simulate_day(self, date: pd.Timestamp, snapshot: dict, positions: pd.Series):
-        # Get prices from the snapshot
-        prices = snapshot["prices"]
-
-        # Re-generate signals to ensure consistency
-        signals = self.alpha.generate(snapshot)
-        tradable = signals.index.intersection(prices.index)
-
-        if tradable.empty:
-            self.logger.warning(f"{date.date()} | No tradable signals")
-            return
-
-        signals = signals.loc[tradable]
-        nonzero = signals[signals != 0]
-        top = nonzero.abs().sort_values(ascending=False).head(5)
-
-        self.logger.info(f"{date.date()} | Alpha: {len(nonzero)} signals | Top: {top.to_dict()}")
-
-        current_portfolio = self.tracker.get_portfolio()
-        risk_adjusted = self.risk.apply(signals, current_portfolio)
-        self._log_state("Risk-adjusted", date, risk_adjusted)
-
-        # DEBUG: Added detailed risk adjustment info
-        self.logger.info(
-            f"{date.date()} | From Alpha to Risk: {signals.abs().sum():.4f} → {risk_adjusted.abs().sum():.4f}"
-        )
-
-        cost_adjusted = self.cost.adjust(risk_adjusted, current_portfolio)
-        self._log_state("Cost-adjusted", date, cost_adjusted)
-
-        # DEBUG: Added detailed cost adjustment info
-        self.logger.info(
-            f"{date.date()} | From Risk to Cost: {risk_adjusted.abs().sum():.4f} → {cost_adjusted.abs().sum():.4f}"
-        )
-
-        # Make sure snapshot has capital value for portfolio construction
-        if "capital" not in snapshot or snapshot["capital"] is None:
-            snapshot["capital"] = self.tracker.get_portfolio_value() or self.initial_equity
-            self.logger.debug(f"Added missing capital to snapshot: ${snapshot['capital']:.2f}")
-
-        target_portfolio = self.portfolio.construct(cost_adjusted, snapshot)
-        self._log_state("Target", date, target_portfolio)
-
-        # DEBUG: Added detailed portfolio construction info
-        self.logger.info(
-            f"{date.date()} | From Cost to Target: {cost_adjusted.abs().sum():.4f} → {target_portfolio.abs().sum():.4f}"
-        )
-
-        trades = reconcile_trades(current_portfolio, target_portfolio)
-        self._log_state("Reconciled", date, trades)
-
-        # DEBUG: Added detailed reconciliation info
-        self.logger.info(
-            f"{date.date()} | Reconciled: {len(trades)} trades | Notional: {trades.abs().sum():.4f}"
-        )
-
-        if trades.empty:
-            self.logger.warning(
-                f"{date.date()} | No trades to execute. Current portfolio size: {len(current_portfolio)}, Target size: {len(target_portfolio)}"
-            )
-            return
-
-        trade_result: TradeResult = simulate_execution(
-            trades,
-            prices,
-            slippage=self.slippage,
-            capital=self.execution.portfolio_value,
-        )
-
-        self._log_state("Executed", date, trade_result.executed)
-        self.logger.debug(f"{date.date()} | Feedback: {trade_result.feedback}")
-
-        filtered = self.tracker.filter(trade_result.executed, date, self.min_holding)
-        self._log_state("Filtered", date, filtered)
-
-        self.execution.record(filtered, trade_result.feedback)
-        updated = self.execution.update_portfolio(current_portfolio, filtered)
-
-        self.tracker.update(updated, date)
-        self.portfolio.feedback_from_execution(trade_result.feedback)
-
-        self.logger.info(f"{date.date()} | {len(filtered)} trades executed")
-
-        # Create daily log entry
-        daily_log = DailyLog(
-            date=date,
-            prices=prices.copy(),
-            trades=filtered.copy(),
-            portfolio=updated.copy(),
-            feedback=trade_result.feedback.copy(),
-        )
-
-        # Track equity for this date
-        # This is a simplified implementation - in reality would calculate actual P&L
-        self.equity_by_date[date] = self.initial_equity
-
-        self.daily_logs.append(daily_log)
-
-        return filtered
-
-    def _log_state(self, label: str, date: pd.Timestamp, series: pd.Series):
-        nonzero = series[series != 0]
-        if not nonzero.empty:
-            self.logger.debug(f"{date.date()} | {label}: {nonzero.to_dict()}")
-
-    def generate_metrics(self, return_equity: bool = False) -> dict:
+    def generate_metrics(self, *, return_equity: bool = False) -> dict:
         if not self.daily_logs:
             self.logger.error("❌ No daily logs available for metrics.")
             return {}
-
-        df = pd.DataFrame([log.__dict__ for log in self.daily_logs]).set_index("date")
-        metrics = PerformanceMetrics(
-            initial_value=self.initial_equity,
-            risk_free_rate=self.risk_free_rate,
+        df = pd.DataFrame([dl.__dict__ for dl in self.daily_logs]).set_index("date")
+        return PerformanceMetrics(self.initial_equity, self.risk_free_rate).compute(
+            df, return_equity=return_equity
         )
-        return metrics.compute(df, return_equity=return_equity)
+
+    # ------------------------------------------------------------------
+    # Feature helpers
+    # ------------------------------------------------------------------
+    def _prepare_feature_matrix(self, fm: Optional[pd.DataFrame]) -> pd.DataFrame:
+        if fm is None:
+            self.logger.warning("⚠️ No feature matrix passed — using global context")
+            fm = get_feature_matrix()
+        if fm.index.names != ["date", "symbol"]:
+            fm = (
+                fm.reset_index()
+                .assign(date=lambda d: pd.to_datetime(d["date"]).dt.normalize())
+                .set_index(["date", "symbol"])
+                .sort_index()
+            )
+        fm.index = pd.MultiIndex.from_tuples(
+            [(pd.to_datetime(d).normalize(), s) for d, s in fm.index.to_list()],
+            names=["date", "symbol"],
+        )
+        assert fm.index.is_unique, "Feature matrix index not unique"
+        return fm.sort_index()
+
+    def _analyze_features(
+        self, data: List[Dict], fm: pd.DataFrame
+    ) -> Tuple[set[pd.Timestamp], pd.Timestamp, int]:
+        fm_dates = set(pd.to_datetime(fm.index.get_level_values("date")).normalize().unique())
+        min_fm_date = min(fm_dates)
+        data_dates = set(pd.to_datetime([d["date"] for d in data]).normalize())
+        warmup = sum(dt < min_fm_date for dt in data_dates)
+        miss = sorted(data_dates - fm_dates)
+        if miss and self.verbose:
+            self.logger.warning(
+                f"⚠️ {len(miss)} dates in data but missing in feature matrix: {miss[:10]} …"
+            )
+        return fm_dates, min_fm_date, warmup
+
+    # ------------------------------------------------------------------
+    # OHLCV helpers
+    # ------------------------------------------------------------------
+    def _process_ohlcv_data(self, data: List[Dict]) -> pd.DataFrame:
+        frames = [
+            d["ohlcv"]
+            for d in data
+            if isinstance(d.get("ohlcv"), pd.DataFrame) and not d["ohlcv"].empty
+        ]
+        if not frames:
+            self.logger.warning("⚠️ No OHLCV data found in snapshots")
+            return pd.DataFrame()
+        return self._combine_ohlcv_frames(frames, data)
+
+    def _combine_ohlcv_frames(self, frames: List[pd.DataFrame], data: List[Dict]) -> pd.DataFrame:
+        first = frames[0]
+        if isinstance(first.index, pd.MultiIndex) and first.index.names == [
+            "date",
+            "symbol",
+        ]:
+            ohlcv = pd.concat(frames)
+        elif {"date", "symbol"}.issubset(first.columns):
+            ohlcv = pd.concat(frames).set_index(["date", "symbol"])
+        elif isinstance(first.index, pd.MultiIndex):
+            fixed = [
+                (
+                    f.copy().set_axis(["date", "symbol"], axis=0, inplace=False)
+                    if f.index.names != ["date", "symbol"]
+                    else f
+                )
+                for f in frames
+            ]
+            ohlcv = pd.concat(fixed)
+        else:
+            built = []
+            for snap, frame in zip(data, frames):
+                date = pd.to_datetime(snap["date"]).normalize()
+                g = frame.copy()
+                g.index.name = "symbol"
+                g = g.reset_index()
+                g["date"] = date
+                built.append(g.set_index(["date", "symbol"]))
+            ohlcv = pd.concat(built)
+        dates = ohlcv.index.get_level_values("date")
+        syms = ohlcv.index.get_level_values("symbol")
+        ohlcv.index = pd.MultiIndex.from_arrays(
+            [pd.to_datetime(dates).normalize(), syms], names=["date", "symbol"]
+        )
+        return ohlcv.sort_index()
+
+    def _fix_missing_ohlcv(self, data: List[Dict], ohlcv: pd.DataFrame) -> None:
+        if ohlcv.empty:
+            return
+        for snap in data:
+            date = pd.to_datetime(snap["date"]).normalize()
+            if not isinstance(snap.get("ohlcv"), pd.DataFrame) or snap["ohlcv"].empty:
+                if date in ohlcv.index.get_level_values("date"):
+                    snap["ohlcv"] = ohlcv.loc[date]
+                    if self.verbose:
+                        self.logger.debug(f"Added OHLCV to snapshot for {date.date()}")
+
+    # ------------------------------------------------------------------
+    # Main day loop  (inside BacktestEngine)
+    # ------------------------------------------------------------------
+
+    def _execute_backtest_days(
+        self,
+        data: List[Dict],
+        fm: pd.DataFrame,
+        fm_dates: set[pd.Timestamp],
+        min_fm_date: pd.Timestamp,
+    ) -> pd.DataFrame:
+        equity = cash = prev_equity = max_equity = self.initial_equity
+        any_trades = positions_built = False
+
+        # 🧷 Bootstrap snapshot on day 0 for correct equity baseline
+        first_date = pd.to_datetime(data[0]["date"]).normalize()
+        first_prices = data[0]["prices"]
+
+        self.execution.mark_to_market(first_prices)
+        self._update_trackers(first_date)
+        self.daily_logs.append(
+            DailyLog(
+                date=first_date,
+                prices=first_prices.copy(),
+                trades=pd.Series(dtype=float),
+                portfolio=self.tracker.get_portfolio().copy(),
+                feedback={},
+                equity=self.execution.portfolio_value,
+                cash=self.execution.current_cash,
+            )
+        )
+        self.logger.info(
+            f"[BOOTSTRAP] Initial snapshot on {first_date.date()} | equity=${self.execution.portfolio_value:.2f}"
+        )
+
+        with Progress(
+            *self._create_progress_columns(),
+            console=self.logger.console,
+            transient=False,
+        ) as prog:
+            task = prog.add_task(
+                "Backtesting",
+                total=len(data),
+                date="Starting…",
+                equity=equity,
+                cash=cash,
+                dd=0.0,
+                dd_colored="[green]0.00%[/]",
+                pnl=0.0,
+                pnl_colored="[green]0.00[/]",
+            )
+
+            for snap in data:
+                date = pd.to_datetime(snap["date"]).normalize()
+
+                try:
+                    if not self._should_process_day(date, min_fm_date, fm_dates):
+                        continue
+
+                    any_trades, positions_built, _ = self._process_trading_day(
+                        snap, date, fm, equity, any_trades, positions_built
+                    )
+
+                    equity = getattr(self.execution, "portfolio_value", self.initial_equity)
+                    cash = getattr(self.execution, "current_cash", self.initial_equity * 0.5)
+
+                    self.equity_by_date[date] = equity
+                    self.cash_by_date[date] = cash
+
+                    daily_pnl, equity, cash, max_equity, dd = self._update_metrics(
+                        date, equity, cash, prev_equity, max_equity
+                    )
+                    prev_equity = equity
+
+                    pnl_color = "green" if daily_pnl >= 0 else "red"
+                    dd_color = "green" if dd >= 0 else "red"
+
+                    prog.update(
+                        task,
+                        advance=1,
+                        date=date.strftime("%Y-%m-%d"),
+                        equity=equity,
+                        cash=cash,
+                        dd=dd,
+                        dd_colored=f"[{dd_color}]{dd:>6.2%}[/]",
+                        pnl=daily_pnl,
+                        pnl_colored=f"[{pnl_color}]{daily_pnl:+7.2f}[/]",
+                    )
+
+                except Exception as exc:
+                    self.logger.error(f"{date.date()} | ⚠️ Exception: {exc}")
+                    self.logger.error(traceback.format_exc())
+
+        # Final equity check
+        final_prices = data[-1]["prices"]
+        final_portfolio = self.tracker.get_portfolio()
+        overlap = final_portfolio.index.intersection(final_prices.index)
+
+        recomputed_equity = (final_portfolio[overlap] * final_prices[overlap]).sum()
+
+        self.logger.debug(
+            f"[CHECK] execution.portfolio_value = {self.execution.portfolio_value:.2f}"
+        )
+        self.logger.debug(f"[CHECK] recomputed_equity = {recomputed_equity:.2f} (tracker * prices)")
+        self.logger.debug(f"[DEBUG] tracker.index (positions): {list(final_portfolio.index)}")
+        self.logger.debug(f"[DEBUG] prices.index (EOD prices): {list(final_prices.index)}")
+        self.logger.debug(f"[DEBUG] common symbols: {list(overlap)}")
+        for sym in final_portfolio.index:
+            price = final_prices.get(sym, None)
+            self.logger.debug(
+                f"[CHECK] {sym} | weight: {final_portfolio[sym]:.4f} | price: {price}"
+            )
+
+        return pd.DataFrame([dl.__dict__ for dl in self.daily_logs]).set_index("date")
+
+    # ------------------------------------------------------------------
+    # Progress-bar helpers
+    # ------------------------------------------------------------------
+
+    def _create_progress_columns(self) -> List:
+        """NautilusTrader-style progress bar with aligned, color-coded metrics."""
+        return [
+            TextColumn("[bold blue]{task.fields[date]}[/]"),
+            BarColumn(),
+            TextColumn("[progress.percentage][bold]{task.percentage:>3.0f}%[/]"),
+            TextColumn(
+                "[dim]Equity:[/] [green]${task.fields[equity]:>8.2f}[/]  "
+                "[dim]Cash:[/] [cyan]${task.fields[cash]:>8.2f}[/]  "
+                "[dim]DD:[/] {task.fields[dd_colored]}  "
+                "[dim]P&L:[/] ${task.fields[pnl_colored]}"
+            ),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ]
+
+    # ------------------------------------------------------------------
+    # Metrics & progress helpers
+    # ------------------------------------------------------------------
+    def _update_metrics(
+        self,
+        date: pd.Timestamp,
+        equity: float,
+        cash: float,
+        prev_equity: float,
+        max_equity: float,
+    ) -> Tuple[float, float, float, float, float]:
+        """Return daily_pnl, new_equity, new_cash, new_max_equity, drawdown."""
+        daily_pnl = equity - prev_equity
+        max_equity = max(max_equity, equity)
+        drawdown = (equity - max_equity) / max_equity if max_equity else 0.0
+
+        self.daily_pnl[date] = daily_pnl
+        self.max_equity = max_equity
+        self.drawdown_by_date[date] = drawdown
+
+        # sanity-check cash bounds
+        if cash < -equity or cash > 2 * equity:
+            cash = equity * 0.5
+            if self.verbose:
+                self.logger.warning(f"Cash value adjusted for {date.date()}")
+
+        return daily_pnl, equity, cash, max_equity, drawdown
+
+    def _update_progress_bar(
+        self,
+        prog: Progress,
+        task_id,
+        date: pd.Timestamp,
+        equity: float,
+        cash: float,
+        dd: float,
+        pnl: float,
+    ) -> None:
+        # 🔍 Debug what the bar is receiving
+        actual_equity = getattr(self.execution, "portfolio_value", equity)
+        actual_cash = getattr(self.execution, "current_cash", cash)
+
+        self.logger.debug(
+            f"[DEBUG] Progress bar update for {date.date()}: "
+            f"equity={equity:.2f} | cash={cash:.2f} | "
+            f"execution.portfolio_value={actual_equity:.2f} | "
+            f"execution.cash={actual_cash:.2f}"
+        )
+
+        prog.update(
+            task_id,
+            advance=1,
+            date=date.date(),
+            equity=actual_equity,
+            cash=actual_cash,
+            dd=dd,
+            pnl=pnl,
+            pnl_prefix="[bold green]" if pnl >= 0 else "[bold red]",
+        )
+
+    def _should_process_day(
+        self,
+        date: pd.Timestamp,
+        min_fm_date: pd.Timestamp,
+        fm_dates: set[pd.Timestamp],
+    ) -> bool:
+        """Skip warm-up days and any date missing from feature-matrix."""
+        if date < min_fm_date:
+            if self.verbose:
+                self.logger.debug(f"{date.date()} | 🔄 Warm-up day (no features yet)")
+            return False
+        if date not in fm_dates:
+            if self.verbose:
+                self.logger.warning(f"{date.date()} | ⚠️ Date missing from feature matrix, skipping")
+            return False
+        return True
+
+    def _update_portfolio_values(self, date: pd.Timestamp) -> Tuple[float, float]:
+        """
+        Update and record end-of-day portfolio equity and cash values.
+        Expects the execution model to provide accurate numbers.
+        """
+        if not hasattr(self.execution, "portfolio_value") or not hasattr(
+            self.execution, "current_cash"
+        ):
+            raise AttributeError(
+                "Execution model must expose `portfolio_value` and `current_cash` attributes."
+            )
+
+        equity = self.execution.portfolio_value
+        cash = self.execution.current_cash
+
+        # Sanity checks
+        if not isinstance(equity, (int, float)) or pd.isna(equity):
+            raise ValueError(f"Invalid equity value on {date}: {equity}")
+        if not isinstance(cash, (int, float)) or pd.isna(cash):
+            raise ValueError(f"Invalid cash value on {date}: {cash}")
+
+        # Optional: guard against wild values
+        if cash < -equity or cash > 2 * equity:
+            self.logger.warning(
+                f"⚠️ Cash {cash:.2f} out of expected range on {date}, resetting to 50% of equity."
+            )
+            cash = 0.5 * equity
+
+        # Save to historical record
+        self.equity_by_date[date] = equity
+        self.cash_by_date[date] = cash
+
+        return equity, cash
+
+    # ------------------------------------------------------------------
+    # Trading-day processing helpers
+    # ------------------------------------------------------------------
+
+    def _process_trading_day(
+        self,
+        snap: Dict,
+        date: pd.Timestamp,
+        fm: pd.DataFrame,
+        equity: float,
+        any_trades: bool,
+        positions_built: bool,
+    ) -> Tuple[bool, bool, Optional[pd.Series]]:
+        """Run alpha → portfolio → execution for a single trading day."""
+
+        # 1️⃣ Attach feature vector for the current date
+        try:
+            snap["feature_vector"] = fm.loc[date]
+        except KeyError:
+            self.logger.warning(f"{date.date()} | ⚠️ No features found in matrix — skipping day")
+            return any_trades, positions_built, None
+
+        # 2️⃣ Generate alpha signals
+        signals = self.alpha.predict(snap)
+        if signals.empty:
+            if self.verbose:
+                self.logger.warning(f"{date.date()} | ⚠️ No alpha signals generated")
+            return any_trades, positions_built, None
+
+        if self.verbose:
+            self.logger.debug(
+                f"{date.date()} | Alpha: {len(signals)} | "
+                f"Top: {signals.sort_values(ascending=False).head(5).to_dict()}"
+            )
+
+        # 3️⃣ Construct portfolio from signals
+        snap["capital"] = getattr(self.execution, "portfolio_value", self.initial_equity)
+        positions = self.portfolio.construct(signals, snap)
+        positions_built |= not positions.empty
+
+        if self.verbose:
+            self._log_position_info(positions)
+
+        # 4️⃣ Simulate trades based on positions
+        trades = self._simulate_day(date, snap, positions)
+        if trades is not None and not trades.empty:
+            any_trades = True
+
+        if trades is None or trades.empty:
+            # No trades — still mark portfolio and log snapshot
+            self.execution.mark_to_market(snap["prices"])
+            self._update_trackers(date)
+
+            self.daily_logs.append(
+                DailyLog(
+                    date=date,
+                    prices=snap["prices"].copy(),
+                    trades=pd.Series(dtype=float),
+                    portfolio=self.tracker.get_portfolio().copy(),
+                    feedback={},
+                    equity=self.execution.portfolio_value,
+                    cash=self.execution.current_cash,
+                )
+            )
+
+            return any_trades, positions_built, None
+
+        return any_trades, positions_built, trades
+
+    def _simulate_day(
+        self, date: pd.Timestamp, snap: Dict, positions: pd.Series
+    ) -> Optional[pd.Series]:
+        """Run risk, cost, reconciliation, and execution for one day."""
+        prices = snap["prices"]
+        signals = self.alpha.predict(snap)
+        tradable = signals.index.intersection(prices.index)
+        if tradable.empty:
+            if self.verbose:
+                self.logger.warning(f"{date.date()} | No tradable symbols")
+            return None
+
+        trades = self._process_signals_to_trades(date, signals.loc[tradable], snap, prices)
+        if trades is None or trades.empty:
+            return None
+
+        return self._execute_trades(date, trades, prices)
+
+    def _process_signals_to_trades(
+        self,
+        date: pd.Timestamp,
+        signals: pd.Series,
+        snap: Dict,
+        prices: pd.Series,
+    ) -> Optional[pd.Series]:
+        """Alpha → risk → cost → portfolio → trades."""
+        current = self.tracker.get_portfolio()
+
+        risk_adj = self.risk.apply(signals, current)
+        cost_adj = self.cost.adjust(risk_adj, current)
+
+        snap.setdefault("capital", getattr(self.execution, "portfolio_value", self.initial_equity))
+        target = self.portfolio.construct(cost_adj, snap)
+        trades = reconcile_trades(current, target)
+
+        if trades.empty and self.verbose:
+            self.logger.warning(f"{date.date()} | No trades post-reconciliation")
+
+        return trades if not trades.empty else None
+
+    def _execute_trades(
+        self, date: pd.Timestamp, trades: pd.Series, prices: pd.Series
+    ) -> Optional[pd.Series]:
+        """Simulate execution, update state, and log a DailyLog."""
+        # 1️⃣ Get available capital
+        capital = getattr(self.execution, "portfolio_value", self.initial_equity)
+
+        # 2️⃣ Simulate execution with slippage and impact
+        result: TradeResult = simulate_execution(
+            trades,
+            prices,
+            slippage=self.slippage,
+            capital=capital,
+        )
+
+        # 3️⃣ Apply min holding period filter
+        filtered = self.tracker.filter(result.executed, date, self.min_holding)
+
+        # 4️⃣ Log trade feedback
+        self.execution.record(filtered, result.feedback)
+
+        # 5️⃣ Get current portfolio, apply trade deltas
+        current_portfolio = self.tracker.get_portfolio()
+        updated_portfolio = self.execution.update_portfolio(current_portfolio, filtered, capital)
+
+        # 6️⃣ Update tracker with new weights (before MTM!)
+        self.tracker.update(updated_portfolio, date)
+
+        # 7️⃣ Revalue portfolio with updated positions
+        self.execution.mark_to_market(prices)
+
+        # 8️⃣ Track equity and cash in time series
+        self._update_trackers(date)
+
+        # 9️⃣ Feedback for portfolio model
+        self.portfolio.feedback_from_execution(result.feedback)
+
+        # 🔟 Log DailyLog snapshot
+        self.logger.info(f"{date.date()} | {len(filtered)} trades executed")
+
+        self.daily_logs.append(
+            DailyLog(
+                date=date,
+                prices=prices.copy(),
+                trades=filtered.copy(),
+                portfolio=updated_portfolio.copy(),
+                feedback=result.feedback.copy(),
+                equity=self.execution.portfolio_value,
+                cash=self.execution.current_cash,
+            )
+        )
+
+        return filtered
+
+    # ------------------------------------------------------------------
+    # Auxiliary log helpers
+    # ------------------------------------------------------------------
+    def _update_trackers(self, date: pd.Timestamp) -> None:
+        self.equity_by_date[date] = getattr(self.execution, "portfolio_value", self.initial_equity)
+        self.cash_by_date[date] = getattr(self.execution, "current_cash", self.initial_equity * 0.5)
+
+    def _log_position_info(self, positions: pd.Series) -> None:
+        gross = positions.abs().sum() if isinstance(positions, pd.Series) else 0
+        self.logger.info(f"✅ Constructed {len(positions)} positions | Gross exposure: {gross:.2f}")
+
+    # ------------------------------------------------------------------
+    # Plotting
+    # ------------------------------------------------------------------
+    def _plot_equity_curve(self) -> None:
+        from blackbox.utils.plotting import plot_equity_curve
+
+        plot_equity_curve(self.daily_logs, self.config.run_id, self.output_dir)

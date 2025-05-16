@@ -83,7 +83,7 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
         self.logger.debug(f"Alpha signals range: min={alpha.min():.6f}, max={alpha.max():.6f}")
 
         if capital <= 0:
-            self.logger.warning("⚠️ Skipping portfolio construction: capital is 0")
+            # self.logger.error("⚠️ Skipping portfolio construction: capital is 0")
             return pd.Series(dtype=float)
 
         if not isinstance(ohlcv, pd.DataFrame) or ohlcv.empty or "close" not in ohlcv.columns:
@@ -293,7 +293,7 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
 
         self.invested_weights = weights.to_dict()
         self.logger.debug(f"Final weights: {weights.to_dict()}")
-        self.logger.info(
+        self.logger.debug(
             f"✅ Constructed {len(weights)} positions | Gross exposure: {weights.abs().sum():.4f}"
         )
         return weights.fillna(0).sort_index()

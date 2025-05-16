@@ -1,126 +1,121 @@
+from typing import Dict, List, Optional
+
 import pandas as pd
 
-from blackbox.models.alpha.base import FeatureAwareAlphaModel
+from blackbox.models.alpha.base import BaseAlphaModel
 from blackbox.utils.context import get_logger
 
 
-class MeanReversionAlphaModel(FeatureAwareAlphaModel):
+class MeanReversionAlphaModel(BaseAlphaModel):
+    """Mean reversion alpha model.
+
+    Generates signals based on price deviations from the mean.
+    """
+
     name = "mean_reversion"
 
     def __init__(
         self,
-        window: int = 20,
-        threshold: float = 0.01,
-        features: list[dict] = None,
+        threshold: float = 0.5,
+        features: Optional[List[Dict]] = None,
+        universe: Optional[List[str]] = None,
+        verbose: bool = False,
     ):
-        super().__init__(features)
-        self.window = window
+        """Initialize the mean reversion model.
+
+        Args:
+            threshold: Signal threshold
+            features: Feature specifications
+            universe: Trading universe
+            verbose: Whether to output detailed logs
+        """
+        super().__init__(verbose=verbose)
         self.threshold = threshold
+        self.features = features or []
+        self.universe = universe or []
+        self.logger = get_logger()
 
-    def predict(self, snapshot: dict) -> pd.Series:
-        """Alias for generate to support standard ML interface"""
-        return self.generate(snapshot)
+    def generate(self, snapshot: Dict) -> pd.Series:
+        """Generate mean reversion signals.
 
-    def generate(self, snapshot: dict) -> pd.Series:
-        logger = get_logger()
-        logger.info(f"MeanReversionAlphaModel: Processing snapshot for {snapshot['date']}")
+        Args:
+            snapshot: Market data snapshot
 
-        # Get feature matrix for this date
-        feature_matrix: pd.DataFrame = self.get_feature_matrix_for(snapshot)
+        Returns:
+            pd.Series: Alpha signals
+        """
+        date = pd.to_datetime(snapshot["date"]).normalize()
+        self.log_info(f"MeanReversionAlphaModel: Processing snapshot for {date}")
 
-        if feature_matrix is None or feature_matrix.empty:
-            logger.warning(f"No features available for {snapshot['date']}")
-            return pd.Series(dtype=float, index=[])
+        if "feature_vector" not in snapshot:
+            self.logger.warning(f"No features available for {date}")
+            return pd.Series(dtype=float)
 
-        logger.info(f"Features available for {len(feature_matrix)} symbols")
-        logger.debug(f"Feature columns: {feature_matrix.columns}")
+        feature_vector = snapshot["feature_vector"]
 
-        # Verify feature values are reasonable
-        has_valid_features = False
-        for col in feature_matrix.columns:
-            col_stats = {
-                "min": feature_matrix[col].min(),
-                "max": feature_matrix[col].max(),
-                "mean": feature_matrix[col].mean(),
-                "nonzero": (feature_matrix[col] != 0).sum(),
-                "null": feature_matrix[col].isnull().sum(),
-            }
-            logger.debug(f"Feature stats for {col}: {col_stats}")
-            if col_stats["nonzero"] > 0:
-                has_valid_features = True
+        # Only log this in verbose mode to reduce output
+        self.log_debug(f"Features available for {len(feature_vector)} symbols")
 
-        if not has_valid_features:
-            logger.warning("No valid non-zero feature values found")
-            return pd.Series(dtype=float, index=[])
+        # Filter to our universe if specified
+        if self.universe:
+            feature_vector = feature_vector[feature_vector.index.isin(self.universe)]
 
-        # Get prices for normalization
+        # Find common symbols between prices and features
         prices = snapshot["prices"]
-        logger.debug(f"Prices available for {len(prices)} symbols")
+        common_symbols = feature_vector.index.intersection(prices.index)
 
-        common_symbols = feature_matrix.index.intersection(prices.index)
+        # Only log this in verbose mode
+        self.log_debug(f"Common symbols: {len(common_symbols)}")
 
-        if len(common_symbols) == 0:
-            logger.warning(f"No common symbols between features and prices")
-            # Debug: Show a few symbols from each to help diagnose
-            logger.debug(f"Feature symbols (sample): {list(feature_matrix.index)[:10]}")
-            logger.debug(f"Price symbols (sample): {list(prices.index)[:10]}")
-            return pd.Series(dtype=float, index=[])
+        if common_symbols.empty:
+            self.logger.warning("No common symbols between prices and features")
+            return pd.Series(dtype=float)
 
-        logger.info(f"Common symbols: {len(common_symbols)}")
+        # Find Z-score features for mean reversion
+        zscore_features = [f for f in self.features if "zscore" in f["name"]]
+        if not zscore_features:
+            self.logger.warning("No Z-score features specified")
+            return pd.Series(dtype=float)
 
-        # Extract Z-score features
-        zscore_columns = [col for col in feature_matrix.columns if "zscore" in col]
+        # Get feature names with periods
+        feature_names = []
+        for f in zscore_features:
+            period = f["params"].get("period", 20)
+            feature_names.append(f"{f['name']}_{period}")
 
-        if not zscore_columns:
-            logger.warning(f"No Z-score features found in {feature_matrix.columns}")
-            return pd.Series(dtype=float, index=[])
+        # Only log in verbose mode
+        self.log_debug(f"Found Z-score features: {feature_names}")
 
-        logger.info(f"Found Z-score features: {zscore_columns}")
+        # Find features in the data
+        available_features = feature_vector.columns.intersection(feature_names)
+        if not available_features.any():
+            self.logger.warning(
+                f"No matching features found. Available: {feature_vector.columns.tolist()}"
+            )
+            return pd.Series(dtype=float)
 
-        # Get subset with common symbols and z-score columns
-        feature_subset = feature_matrix.loc[common_symbols, zscore_columns]
+        # Use the first available Z-score feature
+        feature_name = available_features[0]
 
-        # Debug: How many non-null values?
-        non_null_counts = feature_subset.notna().sum()
-        logger.debug(f"Non-null counts in feature subset: {non_null_counts.to_dict()}")
+        # Generate signals
+        signals = -feature_vector[feature_name]  # Negative Z-score for mean reversion
+        signals = signals.dropna()
 
-        # Drop symbols with all NaN features
-        valid_symbols = feature_subset.dropna(how="all").index
-        logger.debug(f"Symbols with valid features: {len(valid_symbols)}/{len(common_symbols)}")
+        if self.verbose:  # Only log raw signals in verbose mode
+            self.log_info(f"Raw signals: {signals.to_dict()}")
 
-        if len(valid_symbols) == 0:
-            logger.warning("All symbols have NaN features")
-            return pd.Series(dtype=float, index=[])
+        # Apply threshold filter - these are important to always log
+        threshold = self.params.get("threshold", self.threshold)
+        self.log_debug(f"Using threshold: {threshold} (config: {self.threshold})")
 
-        # Keep only symbols with valid features
-        feature_subset = feature_subset.loc[valid_symbols]
+        filtered_signals = signals[signals.abs() >= threshold]
+        self.log_debug(f"Generated {len(filtered_signals)} signals after thresholding")
 
-        # Generate signals: negative Z-score = buy, positive = sell
-        signals = -feature_subset.mean(axis=1)
+        if not filtered_signals.empty:
+            # Always log top signals regardless of verbose mode - this is important info
+            top_buys = filtered_signals.sort_values(ascending=True).head(3)
+            top_sells = filtered_signals.sort_values(ascending=False).head(3)
+            self.log_debug(f"Top buy signals: {top_buys.to_dict()}")
+            self.log_debug(f"Top sell signals: {top_sells.to_dict()}")
 
-        # Log raw signals before thresholding
-        if not signals.empty:
-            signal_stats = {
-                "min": signals.min(),
-                "max": signals.max(),
-                "mean": signals.mean(),
-                "count": len(signals),
-            }
-            logger.debug(f"Signal stats before thresholding: {signal_stats}")
-            logger.info(f"Raw signals: {signals.to_dict()}")
-
-        # Apply threshold from config
-        actual_threshold = self.threshold
-        logger.info(f"Using threshold: {actual_threshold} (config: {self.threshold})")
-
-        # Threshold signals to avoid noise
-        signals = signals[abs(signals) > actual_threshold]
-
-        logger.info(f"Generated {len(signals)} signals after thresholding")
-        if len(signals) > 0:
-            top_signals = signals.sort_values().head(3)
-            bottom_signals = signals.sort_values(ascending=False).head(3)
-            logger.info(f"Top buy signals: {top_signals.to_dict()}")
-            logger.info(f"Top sell signals: {bottom_signals.to_dict()}")
-
-        return signals
+        return filtered_signals

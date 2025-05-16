@@ -3,9 +3,13 @@ from typing import Iterator, Protocol
 import pandas as pd
 
 from blackbox.core.execution_loop import reconcile_trades, simulate_execution
-from blackbox.models.interfaces import (AlphaModel, ExecutionModel,
-                                        PortfolioConstructionModel, RiskModel,
-                                        TransactionCostModel)
+from blackbox.models.interfaces import (
+    AlphaModel,
+    ExecutionModel,
+    PortfolioConstructionModel,
+    RiskModel,
+    TransactionCostModel,
+)
 from blackbox.research.metrics import PerformanceMetrics
 from blackbox.utils.logger import RichLogger
 
@@ -52,9 +56,7 @@ class LiveTradingEngine:
 
             self.execution.record(executed, feedback)
             self.portfolio.feedback_from_execution(feedback)
-            self.portfolio_state = self.execution.update_portfolio(
-                self.portfolio_state, executed
-            )
+            self.portfolio_state = self.execution.update_portfolio(self.portfolio_state, executed)
 
             self.logger.info(f"{date.date()} | {len(executed)} trades executed")
 

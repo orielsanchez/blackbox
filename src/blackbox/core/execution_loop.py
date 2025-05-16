@@ -18,6 +18,8 @@ class DailyLog:
     trades: pd.Series
     portfolio: pd.Series
     feedback: Dict[str, Any]
+    equity: float
+    cash: float
 
 
 def reconcile_trades(current: pd.Series, target: pd.Series) -> pd.Series:

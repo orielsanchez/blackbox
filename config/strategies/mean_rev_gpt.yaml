@@ -1,10 +1,9 @@
 # Simple mean reversion strategy to use for testing
-run_id: tiny_mean_reversion
-start_date: '2024-05-01'
+run_id: mean_reversion
+start_date: '2020-05-01'
 end_date: '2025-05-01'
-universe_file: universe/tiny_universe.csv
+universe_file: universe/debug_universe.csv
 
-# Verbose flag allows toggling between detailed and minimal output
 verbose: false  # Set to true for detailed logs and debugging information
 
 data:
@@ -17,36 +16,36 @@ data:
 alpha_model:
   name: mean_reversion
   params:
-    threshold: 0.2
+    threshold: 1.5
     features:
       - name: zscore_price
         params:
-          period: 20
+          period: 10
       - name: bollinger_band
         params:
-          period: 20
-          std_dev: 2.0
+          period: 15
+          std_dev: 1.5
 
 risk_model:
   name: position_limit
   params:
-    max_leverage: 1.0
-    max_position_size: 0.25
+    max_leverage: 2.0
+    max_position_size: 0.15
     allow_shorts: true
 
 tx_cost_model:
   name: quadratic_market_impact
   params:
     commission_rate: 0.000001
-    impact_coefficient: 0.0000005
+    impact_coefficient: 0.0
     min_commission: 0.01
 
 portfolio_model:
   name: volatility_scaled
   params:
     vol_lookback: 20
-    risk_target: 0.5
-    max_weight: 0.25
+    risk_target: 1.0
+    max_weight: 0.1
     min_notional: 1.0
     min_price: 1.0
     max_dollar_per_symbol: 500
@@ -54,20 +53,19 @@ portfolio_model:
 execution_model:
   name: market
   params:
-    slippage: 0.0001
-    commission: 0.0001
+    slippage: 0.00001
+    commission: 0.00001
     fractional: true
     allow_shorts: true
     min_notional: 5.0
 
 initial_portfolio_value: 1000
 min_holding_period: 1
-settlement_delay: 1
+settlement_delay: 2
 plot_equity: true
 risk_free_rate: 0.0
 
-# Logging settings
-log_level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level: INFO
 log_to_console: true
 log_to_file: true
 structured_logging: true
