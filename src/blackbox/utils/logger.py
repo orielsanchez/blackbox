@@ -4,6 +4,13 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 
 class RichLogger:
@@ -14,13 +21,14 @@ class RichLogger:
         log_to_console: bool = True,
         log_to_file: bool = True,
         log_file_path: str = "results/logs/blackbox.log",
-        structured: bool = True,
         module_filter: str = "",
+        structured: bool = False,
     ):
         self.console = Console()
         self._logger = logging.getLogger(name)
         self._logger.setLevel(getattr(logging, level.upper()))
-        self._logger.handlers.clear()  # prevent duplicate logs on reload
+        self._logger.handlers.clear()  # prevent duplicate logs
+        self.structured = structured
 
         if module_filter:
 
@@ -30,7 +38,7 @@ class RichLogger:
 
             self._logger.addFilter(ModuleFilter())
 
-        # Formatter
+        # Minimal formatter (no timestamp, no level, no module name)
         formatter = (
             logging.Formatter(
                 fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -47,26 +55,25 @@ class RichLogger:
                 markup=True,
                 rich_tracebacks=True,
                 show_path=False,
-                show_level=True,
+                show_level=False,
                 show_time=False,
             )
             console_handler.setLevel(self._logger.level)
             console_handler.setFormatter(formatter)
             self._logger.addHandler(console_handler)
 
-        # Optional file logging
+        # File logging
         if log_to_file:
             Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            full_name = Path(log_file_path).with_name(
+            full_path = Path(log_file_path).with_name(
                 f"{Path(log_file_path).stem}_{timestamp}.log"
             )
-            file_handler = logging.FileHandler(full_name)
+            file_handler = logging.FileHandler(full_path)
             file_handler.setLevel(self._logger.level)
             file_handler.setFormatter(formatter)
             self._logger.addHandler(file_handler)
 
-    # Drop-in replacements with args/kwargs
     def debug(self, msg: str, *args, **kwargs):
         self._logger.debug(msg, *args, **kwargs)
 
@@ -84,3 +91,14 @@ class RichLogger:
 
     def get_logger(self) -> logging.Logger:
         return self._logger
+
+    def progress(self) -> Progress:
+        return Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            "[progress.percentage]{task.percentage:>3.0f}%",
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=self.console,
+            transient=True,
+        )

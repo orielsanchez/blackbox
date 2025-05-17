@@ -2,17 +2,12 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from blackbox.models.alpha.base import BaseAlphaModel
+from blackbox.models.interfaces import AlphaModel
 from blackbox.utils.context import get_logger
 
 
-class MeanReversionAlphaModel(BaseAlphaModel):
-    """Mean reversion alpha model.
-
-    Generates signals based on price deviations from the mean.
-    """
-
-    name = "mean_reversion"
+class MeanReversionAlphaModel(AlphaModel):
+    """Mean reversion alpha model using z-score features."""
 
     def __init__(
         self,
@@ -21,101 +16,72 @@ class MeanReversionAlphaModel(BaseAlphaModel):
         universe: Optional[List[str]] = None,
         verbose: bool = False,
     ):
-        """Initialize the mean reversion model.
-
-        Args:
-            threshold: Signal threshold
-            features: Feature specifications
-            universe: Trading universe
-            verbose: Whether to output detailed logs
-        """
-        super().__init__(verbose=verbose)
         self.threshold = threshold
         self.features = features or []
         self.universe = universe or []
+        self.verbose = verbose
         self.logger = get_logger()
 
-    def generate(self, snapshot: Dict) -> pd.Series:
-        """Generate mean reversion signals.
+    @property
+    def name(self) -> str:
+        return "mean_reversion"
 
-        Args:
-            snapshot: Market data snapshot
+    def log_info(self, msg: str):
+        if self.verbose:
+            self.logger.info(msg)
 
-        Returns:
-            pd.Series: Alpha signals
-        """
-        date = pd.to_datetime(snapshot["date"]).normalize()
-        self.log_info(f"MeanReversionAlphaModel: Processing snapshot for {date}")
+    def log_debug(self, msg: str):
+        if self.verbose:
+            self.logger.debug(msg)
 
-        if "feature_vector" not in snapshot:
-            self.logger.warning(f"No features available for {date}")
-            return pd.Series(dtype=float)
+    def predict(self, features: pd.DataFrame) -> pd.Series:
+        if not isinstance(features.index, pd.MultiIndex):
+            raise ValueError("Expected MultiIndex [date, symbol]")
 
-        feature_vector = snapshot["feature_vector"]
+        dates = features.index.get_level_values("date").unique()
+        if len(dates) != 1:
+            raise ValueError(f"Expected single date, got {dates.tolist()}")
+        date = dates[0]
 
-        # Only log this in verbose mode to reduce output
-        self.log_debug(f"Features available for {len(feature_vector)} symbols")
+        self.log_info(f"📅 Processing alpha for {date}")
 
-        # Filter to our universe if specified
+        symbols = features.index.get_level_values("symbol")
         if self.universe:
-            feature_vector = feature_vector[feature_vector.index.isin(self.universe)]
+            symbols = symbols.intersection(self.universe)
+            features_today = features.loc[(date, symbols)]
 
-        # Find common symbols between prices and features
-        prices = snapshot["prices"]
-        common_symbols = feature_vector.index.intersection(prices.index)
-
-        # Only log this in verbose mode
-        self.log_debug(f"Common symbols: {len(common_symbols)}")
-
-        if common_symbols.empty:
-            self.logger.warning("No common symbols between prices and features")
+        if features.empty:
+            self.logger.warning(f"{date} | ⚠️ No features available after filtering")
             return pd.Series(dtype=float)
 
-        # Find Z-score features for mean reversion
-        zscore_features = [f for f in self.features if "zscore" in f["name"]]
-        if not zscore_features:
-            self.logger.warning("No Z-score features specified")
+        candidate_cols = []
+        for spec in self.features:
+            if "zscore" not in spec["name"]:
+                continue
+            period = spec["params"].get("period", 20)
+            col_name = f"{spec['name']}_{period}"
+            if col_name in features.columns:
+                candidate_cols.append(col_name)
+
+        if not candidate_cols:
+            self.logger.warning(f"{date} | ⚠️ No z-score features found in columns")
             return pd.Series(dtype=float)
 
-        # Get feature names with periods
-        feature_names = []
-        for f in zscore_features:
-            period = f["params"].get("period", 20)
-            feature_names.append(f"{f['name']}_{period}")
-
-        # Only log in verbose mode
-        self.log_debug(f"Found Z-score features: {feature_names}")
-
-        # Find features in the data
-        available_features = feature_vector.columns.intersection(feature_names)
-        if not available_features.any():
-            self.logger.warning(
-                f"No matching features found. Available: {feature_vector.columns.tolist()}"
-            )
-            return pd.Series(dtype=float)
-
-        # Use the first available Z-score feature
-        feature_name = available_features[0]
-
-        # Generate signals
-        signals = -feature_vector[feature_name]  # Negative Z-score for mean reversion
+        feature_col = candidate_cols[0]
+        signals = -features[feature_col]
         signals = signals.dropna()
 
-        if self.verbose:  # Only log raw signals in verbose mode
-            self.log_info(f"Raw signals: {signals.to_dict()}")
+        self.log_debug(f"{date} | Raw signals: {signals.to_dict()}")
 
-        # Apply threshold filter - these are important to always log
-        threshold = self.params.get("threshold", self.threshold)
-        self.log_debug(f"Using threshold: {threshold} (config: {self.threshold})")
+        filtered = signals[signals.abs() >= self.threshold]
+        self.log_debug(
+            f"{date} | Signals after threshold ({self.threshold}): {len(filtered)}"
+        )
 
-        filtered_signals = signals[signals.abs() >= threshold]
-        self.log_debug(f"Generated {len(filtered_signals)} signals after thresholding")
+        if not filtered.empty and self.verbose:
+            buys = filtered.sort_values().head(3)
+            sells = filtered.sort_values(ascending=False).head(3)
+            self.logger.info(f"{date} | Top buys: {buys.to_dict()}")
+            self.logger.info(f"{date} | Top sells: {sells.to_dict()}")
 
-        if not filtered_signals.empty:
-            # Always log top signals regardless of verbose mode - this is important info
-            top_buys = filtered_signals.sort_values(ascending=True).head(3)
-            top_sells = filtered_signals.sort_values(ascending=False).head(3)
-            self.log_debug(f"Top buy signals: {top_buys.to_dict()}")
-            self.log_debug(f"Top sell signals: {top_sells.to_dict()}")
-
-        return filtered_signals
+        return filtered

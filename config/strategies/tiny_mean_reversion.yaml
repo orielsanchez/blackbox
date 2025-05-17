@@ -1,7 +1,7 @@
 # Simple mean reversion strategy to use for testing
 run_id: tiny_mean_reversion
-start_date: '2024-05-01'
-end_date: '2025-05-01'
+start_date: '2024-05-03'
+end_date: '2025-05-02'
 universe_file: universe/tiny_universe.csv
 
 # Verbose flag allows toggling between detailed and minimal output
@@ -67,7 +67,7 @@ plot_equity: true
 risk_free_rate: 0.0
 
 # Logging settings
-log_level: INFO  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level: INFO # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
 log_to_console: true
 log_to_file: true
 structured_logging: true

@@ -1,20 +1,35 @@
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any, Dict, Union
 
 import yaml
 from dacite import from_dict
 
-from blackbox.config.schema import BacktestConfig
+from blackbox.core.types.context import BacktestConfig
 
 
-def load_config(path: str | Path) -> BacktestConfig:
-    path = Path(path)
-    with open(path, "r") as f:
-        raw = yaml.safe_load(f)
+def load_config(path: Union[str, Path]) -> BacktestConfig:
+    path = Path(path).resolve()
 
-    return from_dict(data_class=BacktestConfig, data=raw)
+    with path.open("r") as f:
+        raw: Dict[str, Any] = yaml.safe_load(f)
+
+    config = from_dict(data_class=BacktestConfig, data=raw)
+
+    # Validate all model configs immediately
+    for model in [
+        config.alpha_model,
+        config.risk_model,
+        config.tx_cost_model,
+        config.portfolio_model,
+        config.execution_model,
+    ]:
+        model.validate()
+
+    return config
 
 
-def dump_config(config: BacktestConfig, path: Path):
-    with open(path, "w") as f:
-        yaml.safe_dump(asdict(config), f)
+def dump_config(config: BacktestConfig, path: Union[str, Path]) -> None:
+    path = Path(path).resolve()
+    with path.open("w") as f:
+        yaml.safe_dump(asdict(config), f, sort_keys=False)

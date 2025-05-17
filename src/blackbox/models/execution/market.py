@@ -1,119 +1,180 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import pandas as pd
 
+from blackbox.core.types.types import OHLCVSnapshot, PortfolioTarget, TradeResult
 from blackbox.models.interfaces import ExecutionModel
 from blackbox.utils.context import get_logger
+from blackbox.utils.logger import RichLogger
 
 
 class MarketExecution(ExecutionModel):
-    name = "market"
+    """Slippage-aware market order execution tracking share-based positions."""
 
     def __init__(
         self,
         slippage: float = 0.0002,
         commission: float = 0.0001,
-        initial_portfolio_value: float = None,
+        initial_portfolio_value: float = 1_000_000.0,
         fractional: bool = True,
         allow_shorts: bool = True,
         min_notional: float = 1.0,
+        logger: Optional[RichLogger] = None,
     ):
-        self.slippage = slippage
-        self.commission = commission
-        self.fractional = fractional
-        self.allow_shorts = allow_shorts
-        self.min_notional = min_notional
+        self._slippage = slippage
+        self._commission = commission
+        self._fractional = fractional
+        self._allow_shorts = allow_shorts
+        self._min_notional = min_notional
 
-        self.portfolio_value = 0.0
-        self.current_cash = initial_portfolio_value or 0.0
+        self._portfolio_value = initial_portfolio_value
+        self._current_cash = initial_portfolio_value
+        self._positions: pd.Series = pd.Series(dtype=float)
 
-        self.initial_portfolio_value = initial_portfolio_value or 1_000_000
-        self.portfolio_value = self.initial_portfolio_value
-        self.current_cash = self.initial_portfolio_value
-        self.positions = pd.Series(dtype=float)  # symbol -> weight
-        self.history = []
+        self._history: list[tuple[pd.Series, Dict[str, Dict]]] = []
+        self.logger = logger or get_logger()
 
-        self.logger = get_logger()
+    @property
+    def name(self) -> str:
+        return "market"
 
-    def record(self, trades: pd.Series, feedback: Dict[str, Dict]):
-        self.history.append((trades.copy(), feedback.copy()))
+    @property
+    def portfolio_value(self) -> float:
+        return self._portfolio_value
 
-    def update_portfolio(self, current: pd.Series, trades: pd.Series, capital: float) -> pd.Series:
-        new_weights = current.copy()
-        executed_trades = {}
-        total_trade_cost = 0.0
+    @property
+    def current_cash(self) -> float:
+        return self._current_cash
+
+    def execute(
+        self,
+        target: PortfolioTarget,
+        current: pd.Series,
+        snapshot: OHLCVSnapshot,
+        prices: pd.Series,
+        open_prices: pd.Series,
+        date: pd.Timestamp,
+    ) -> TradeResult:
+        """Execute trades, applying slippage and commissions."""
+        trades = target.weights - current
+        capital = target.capital
+        new_positions = self._positions.copy()
+
+        executed, fill_prices = pd.Series(dtype=float), pd.Series(dtype=float)
+        feedback: dict[str, dict] = {}
 
         for symbol, weight_delta in trades.items():
-            if not self.fractional:
-                weight_delta = round(weight_delta, 4)
-
-            prev_weight = new_weights.get(symbol, 0.0)
-            new_weight = prev_weight + weight_delta
-            notional = abs(weight_delta * capital)
-
-            if not self.allow_shorts and new_weight < 0:
-                self.logger.debug(f"[Execution] Skipping short trade: {symbol}")
-                continue
-
-            if notional < self.min_notional:
-                self.logger.debug(
-                    f"[Execution] Skipping {symbol} — notional ${notional:.2f} < min ${self.min_notional:.2f}"
+            price = prices.get(symbol)
+            if pd.isna(price) or price <= 0:
+                self.logger.warning(
+                    f"[Execution] Invalid price for {symbol}, skipping."
                 )
                 continue
 
-            slippage_cost = notional * self.slippage
-            commission_cost = max(notional * self.commission, 0.01)
-            total_cost = notional + slippage_cost + commission_cost
+            notional = weight_delta * capital
+            shares_delta = notional / price
+            if not self._fractional:
+                shares_delta = round(shares_delta)
 
-            if self.current_cash - total_trade_cost < total_cost:
+            new_position = new_positions.get(symbol, 0.0) + shares_delta
+            trade_notional = abs(shares_delta * price)
+
+            if not self._allow_shorts and new_position < 0:
+                self.logger.debug(f"[Execution] Skipping short trade for {symbol}.")
+                continue
+
+            if trade_notional < self._min_notional:
                 self.logger.debug(
-                    f"[Execution] Skipping {symbol} — cost ${total_cost:.2f} exceeds available cash ${self.current_cash - total_trade_cost:.2f}"
+                    f"[Execution] Trade notional ${trade_notional:.2f} for {symbol} below minimum."
                 )
                 continue
 
-            # Accept trade
-            new_weights[symbol] = new_weight
-            executed_trades[symbol] = weight_delta
-            total_trade_cost += total_cost
+            slippage_cost = trade_notional * self._slippage
+            commission_cost = max(trade_notional * self._commission, 0.01)
+            total_cost = trade_notional + slippage_cost + commission_cost
 
-            self.logger.debug(
-                f"[Execution] {symbol}: Δweight={weight_delta:.6f} → new_weight={new_weight:.6f}, cost=${total_cost:.2f}"
+            if self._current_cash < total_cost:
+                self.logger.debug(
+                    f"[Execution] Insufficient cash (${self._current_cash:.2f}) for trade {symbol} (${total_cost:.2f})."
+                )
+                continue
+
+            # Execute trade
+            new_positions[symbol] = new_position
+            executed[symbol] = shares_delta
+            fill_prices[symbol] = price * (
+                1 + self._slippage * (1 if shares_delta > 0 else -1)
             )
 
-        self.positions = new_weights.copy()
-        self.current_cash -= total_trade_cost
+            feedback[symbol] = {
+                "fill_price": fill_prices[symbol],
+                "slippage": self._slippage,
+                "commission": commission_cost,
+                "notional": notional,
+                "cost": total_cost,
+                "direction": "buy" if shares_delta > 0 else "sell",
+            }
 
-        if self.current_cash <= 0:
-            self.logger.warning(
-                "[Execution] 🚨 Cash depleted or zero! Execution may behave incorrectly."
-            )
+            self._current_cash -= total_cost
 
-        return self.positions[self.positions.abs() > 1e-6].sort_index()
+        self._positions = new_positions[abs(new_positions) > 1e-6].sort_index()
+        self.record(executed.copy(), feedback.copy())
 
-    def get_available_capital(self) -> float:
-        return self.portfolio_value
+        if self._current_cash < 0:
+            self.logger.warning("[Execution] Negative cash balance detected!")
 
-    def mark_to_market(self, prices: pd.Series):
-        weighted_values = {
-            symbol: weight * prices[symbol]
-            for symbol, weight in self.positions.items()
-            if symbol in prices
-        }
-
-        missing = [s for s in self.positions.index if s not in prices]
-        for symbol in missing:
-            self.logger.warning(f"[MTM] Missing price for {symbol}, skipping.")
-
-        position_value = sum(weighted_values.values())
-        self.portfolio_value = position_value + self.current_cash
-
-        self.logger.debug(
-            f"[MTM] Portfolio value updated: ${self.portfolio_value:,.2f} "
-            f"(cash: ${self.current_cash:,.2f})"
+        return TradeResult(
+            executed=executed,
+            fill_prices=fill_prices,
+            feedback=feedback,
         )
 
-    def __repr__(self):
+    def record(self, trades: pd.Series, feedback: Dict) -> None:
+        """Record executed trades and their feedback."""
+        self._history.append((trades, feedback))
+
+    def update_portfolio(
+        self,
+        current: pd.Series,
+        trades: pd.Series,
+        capital: float,
+        prices: pd.Series,
+    ) -> pd.Series:
+        """Update internal portfolio positions after trades."""
+        positions = current.copy()
+        for symbol, trade_shares in trades.items():
+            positions[symbol] = positions.get(symbol, 0.0) + trade_shares
+
+        positions = positions[abs(positions) > 1e-6].sort_index()
+        self._positions = positions
+
+        invested = (positions * prices).sum(min_count=1)
+        self._current_cash = capital - invested
+        self._portfolio_value = invested + self._current_cash
+
+        return positions
+
+    def mark_to_market(self, prices: pd.Series) -> None:
+        """Update portfolio value based on current market prices."""
+        positions_value = (self._positions * prices).sum(min_count=1)
+
+        missing_prices = self._positions.index[
+            ~self._positions.index.isin(prices.index)
+        ]
+        for symbol in missing_prices:
+            self.logger.warning(f"[MTM] Missing price for {symbol}")
+
+        self._portfolio_value = self._current_cash + positions_value
+        self.logger.debug(
+            f"[MTM] Portfolio=${self._portfolio_value:.2f}, Cash=${self._current_cash:.2f}"
+        )
+
+    def get_available_capital(self) -> float:
+        """Return current portfolio valuation."""
+        return self._portfolio_value
+
+    def __repr__(self) -> str:
         return (
-            f"<MarketExecution portfolio=${self.portfolio_value:,.2f}, "
-            f"cash=${self.current_cash:,.2f}, positions={len(self.positions)}>"
+            f"<MarketExecution portfolio=${self._portfolio_value:,.2f}, "
+            f"cash=${self._current_cash:,.2f}, positions={len(self._positions)}>"
         )

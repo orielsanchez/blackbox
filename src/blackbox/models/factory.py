@@ -1,62 +1,69 @@
-from typing import Any, Type
+import inspect
+from typing import Type, TypeVar
 
-from blackbox.config.schema import BacktestConfig
-from blackbox.models.interfaces import (AlphaModel, ExecutionModel,
-                                        PortfolioConstructionModel, RiskModel,
-                                        TransactionCostModel)
-from blackbox.models.registry_dynamic import discover_models
-
-# Registry cache: prevent duplicate discovery
-_discovered: dict[str, dict[str, type]] = {}
-
-
-def _build_model(config_entry, model_dir: str, interface_cls: Type[Any]) -> Any:
-    """Dynamically load and instantiate a model with given interface and params."""
-    name = config_entry.name
-    params = config_entry.params or {}
-
-    # Cache registry
-    if model_dir not in _discovered:
-        _discovered[model_dir] = discover_models(model_dir, interface_cls)
-
-    model_registry = _discovered[model_dir]
-
-    if name not in model_registry:
-        available = list(model_registry.keys())
-        raise ValueError(
-            f"❌ Model '{name}' not found in '{model_dir}'. Available: {available}"
-        )
-
-    model_cls = model_registry[name]
-    try:
-        return model_cls(**params)
-    except Exception as e:
-        raise RuntimeError(
-            f"⚠️ Failed to instantiate model '{name}' in '{model_dir}': {e}"
-        ) from e
-
-
-def build_models(
-    config: BacktestConfig,
-) -> tuple[
+from blackbox.config.loader import BacktestConfig
+from blackbox.core.types.context import StrategyModels
+from blackbox.models.interfaces import (
     AlphaModel,
+    ExecutionModel,
+    PortfolioConstructionModel,
     RiskModel,
     TransactionCostModel,
-    PortfolioConstructionModel,
-    ExecutionModel,
-]:
-    alpha = _build_model(config.alpha_model, "src/blackbox/models/alpha", AlphaModel)
-    risk = _build_model(config.risk_model, "src/blackbox/models/risk", RiskModel)
-    cost = _build_model(
-        config.tx_cost_model, "src/blackbox/models/cost", TransactionCostModel
+)
+from blackbox.utils.registry import discover_models
+
+T = TypeVar("T")
+
+
+def build_models(config: BacktestConfig) -> StrategyModels:
+    alpha_cls = _get_model_class(
+        "blackbox.models.alpha", AlphaModel, config.alpha_model.name
     )
-    portfolio = _build_model(
-        config.portfolio_model,
-        "src/blackbox/models/portfolio",
+    risk_cls = _get_model_class(
+        "blackbox.models.risk", RiskModel, config.risk_model.name
+    )
+    cost_cls = _get_model_class(
+        "blackbox.models.cost", TransactionCostModel, config.tx_cost_model.name
+    )
+    portfolio_cls = _get_model_class(
+        "blackbox.models.portfolio",
         PortfolioConstructionModel,
+        config.portfolio_model.name,
     )
-    execution = _build_model(
-        config.execution_model, "src/blackbox/models/execution", ExecutionModel
+    execution_cls = _get_model_class(
+        "blackbox.models.execution", ExecutionModel, config.execution_model.name
     )
 
-    return alpha, risk, cost, portfolio, execution
+    return StrategyModels(
+        alpha=_safe_construct(alpha_cls, config.alpha_model.params),
+        risk=_safe_construct(risk_cls, config.risk_model.params),
+        cost=_safe_construct(cost_cls, config.tx_cost_model.params),
+        portfolio=_safe_construct(portfolio_cls, config.portfolio_model.params),
+        execution=_safe_construct(execution_cls, config.execution_model.params),
+    )
+
+
+def _get_model_class(package: str, interface: type, model_name: str) -> type:
+    registry = discover_models(package, interface)
+    key = model_name.lower()
+    if key not in registry:
+        raise ValueError(f"❌ Model '{model_name}' not found in {package}")
+    cls = registry[key]
+    if not issubclass(cls, interface):
+        raise TypeError(
+            f"❌ Model '{model_name}' in {package} does not subclass the interface"
+        )
+    return cls
+
+
+def _safe_construct(cls: Type[T], params: dict) -> T:
+    """Construct an instance of T, filtering out invalid kwargs."""
+    if not params:
+        return cls()
+
+    signature = inspect.signature(cls.__init__)
+    valid_params = {
+        k: v for k, v in params.items() if k in signature.parameters and k != "self"
+    }
+
+    return cls(**valid_params)

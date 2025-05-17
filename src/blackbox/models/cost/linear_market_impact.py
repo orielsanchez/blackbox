@@ -3,31 +3,52 @@ import pandas as pd
 from blackbox.models.interfaces import TransactionCostModel
 
 
-class FixedTransactionCostModel(TransactionCostModel):
-    name = "fixed"
+class LinearMarketImpact(TransactionCostModel):
+    """
+    Transaction cost model that applies a linear market impact penalty.
 
-    def __init__(self, slippage: float = 0.0001, commission: float = 0.0001):
-        self.slippage = slippage  # proportional to trade value
-        self.commission = commission  # also proportional
+    Cost is proportional to the absolute trade size (|target - current|).
+    """
 
-    def estimate(self, trades: pd.Series, prices: pd.Series) -> pd.Series:
+    def __init__(self, impact_coefficient: float = 0.001):
         """
-        Returns estimated cost per symbol as a fraction of portfolio value.
-        Cost = |trade| * price * (slippage + commission)
+        Args:
+            impact_coefficient: Cost per unit change in portfolio weight.
         """
-        cost_rate = self.slippage + self.commission
-        return (trades.abs() * prices * cost_rate).fillna(0.0)
+        self.impact_coefficient = impact_coefficient
 
-    def adjust(self, signals: pd.Series, current: pd.Series) -> pd.Series:
+    @property
+    def name(self) -> str:
+        return "linear_market_impact"
+
+    def estimate(self, trades: pd.Series) -> pd.Series:
         """
-        Adjust signals by subtracting cost from raw signal strength.
-        The adjustment is scaled down to allow trades to happen.
+        Estimate per-symbol cost based on linear impact model.
+
+        Args:
+            trades: Difference between proposed and current weights
+
+        Returns:
+            Cost penalty per symbol
         """
+        return (trades.abs() * self.impact_coefficient).fillna(0.0)
+
+    def adjust(self, signals: pd.Series, features: pd.DataFrame) -> pd.Series:
+        """
+        Adjust target weights by penalizing large trades.
+
+        Args:
+            signals: Proposed target weights
+            features: Feature matrix (must include 'current_position')
+
+        Returns:
+            Cost-adjusted weights
+        """
+        current = features.get("current_position", pd.Series(0.0, index=signals.index))
         trades = signals.subtract(current, fill_value=0.0)
-        # Assume price = 1 for normalizing cost impact; or inject actual prices here
-        dummy_prices = pd.Series(1.0, index=trades.index)
-        cost_penalty = self.estimate(trades, dummy_prices)
+        cost_penalty = self.estimate(trades)
 
-        # Scale down cost penalty to allow trades to happen
-        # This ensures the cost doesn't completely eliminate signals
-        return signals - (cost_penalty * 0.001)  # Reduce cost impact by 1000x
+        # Apply linear cost as a shrinkage penalty
+        adjusted = signals * (1.0 - cost_penalty.clip(upper=1.0))
+
+        return adjusted

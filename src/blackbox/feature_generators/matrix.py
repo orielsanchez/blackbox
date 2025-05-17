@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Optional
 
 import pandas as pd
 from rich.progress import (
@@ -9,25 +9,24 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from blackbox.config.schema import FeatureSpec
+from blackbox.core.types.context import FeatureSpec
 from blackbox.feature_generators.pipeline import FeaturePipeline
 from blackbox.utils.context import get_logger
 
 
 class FeatureMatrixGenerator:
-    def __init__(self, feature_spec: List[FeatureSpec]):
+    def __init__(self, feature_spec: list[FeatureSpec]):
         self.logger = get_logger()
         self.pipeline = FeaturePipeline(
             [{"name": f.name, "params": f.params} for f in feature_spec]
         )
 
-    def run(
+    def generate(
         self,
         ohlcv: pd.DataFrame,
-        dates: List[pd.Timestamp],
+        dates: list[pd.Timestamp],
         start_date: Optional[pd.Timestamp] = None,
     ) -> pd.DataFrame:
-        # Ensure proper indexing
         if ohlcv.index.names != ["date", "symbol"]:
             self.logger.warning(
                 f"⚠️ Reindexing OHLCV: expected ['date', 'symbol'], got {ohlcv.index.names}"
@@ -43,16 +42,11 @@ class FeatureMatrixGenerator:
             f"📐 Full feature frame range: {earliest_feature_date} → {latest_feature_date}"
         )
 
-        # Log the earliest date for each feature to show warmup requirements
         first_dates = {}
         for column in full_features.columns:
-            # Find first non-NaN date for this feature
             valid_data = full_features[column].dropna()
             if not valid_data.empty:
                 first_dates[column] = valid_data.index.get_level_values("date").min()
-
-        if first_dates:
-            self.logger.info(f"🏁 Feature earliest valid dates: {first_dates}")
 
         if (
             not isinstance(full_features.index, pd.MultiIndex)
@@ -62,10 +56,8 @@ class FeatureMatrixGenerator:
 
         full_features = full_features[~full_features.index.duplicated(keep="first")]
         total_symbols = ohlcv.index.get_level_values("symbol").nunique()
-
         earliest_requested_date = min(dates) if dates else None
 
-        # Show why dates might be missing due to warmup
         if earliest_requested_date and earliest_feature_date > earliest_requested_date:
             warmup_days = (earliest_feature_date - earliest_requested_date).days
             self.logger.warning(
@@ -94,7 +86,6 @@ class FeatureMatrixGenerator:
                     skipped_dates += 1
                     continue
 
-                # Check if date is in warmup period
                 if date < earliest_feature_date:
                     warmup_dates += 1
                     self.logger.debug(
@@ -125,12 +116,10 @@ class FeatureMatrixGenerator:
             self.logger.info(
                 f"⏩ Skipped {skipped_dates} dates before {start_date.date()}"
             )
-
         if warmup_dates > 0:
             self.logger.info(
                 f"⏳ Skipped {warmup_dates} dates in warmup period (before {earliest_feature_date.date()})"
             )
-
         if missing_dates > 0:
             self.logger.warning(
                 f"⚠️ Missing features for {missing_dates} dates after warmup period"

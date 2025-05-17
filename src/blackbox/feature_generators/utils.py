@@ -1,31 +1,30 @@
-import pandas as pd
+from typing import List
 
-from blackbox.utils.context import get_logger
+from blackbox.core.types.context import BacktestConfig, FeatureSpec
 
 
-def validate_feature_output(
-    feature_name: str, df: pd.DataFrame, current_date: pd.Timestamp = None
-) -> pd.DataFrame:
-    logger = get_logger()
+def collect_all_feature_specs(config: BacktestConfig) -> List[FeatureSpec]:
+    """
+    Collects all unique feature specs from all models in the backtest config.
 
-    if df is None or df.empty:
-        logger.warning(f"{feature_name}: returned empty DataFrame")
-        return pd.DataFrame()
+    Args:
+        config: The backtest config
 
-    # Drop all-NaN rows
-    if df.isna().all(axis=1).any():
-        logger.warning(f"{feature_name}: dropping rows where all features are NaN")
-        df = df.dropna(how="all")
+    Returns:
+        A list of unique FeatureSpec instances
+    """
+    feature_specs = []
 
-    # If current_date is provided, validate that it's in the index
-    if current_date is not None:
-        if "date" not in df.index.names:
-            logger.warning(f"{feature_name}: index missing 'date' level")
-            return pd.DataFrame()
-        if current_date not in df.index.get_level_values("date"):
-            logger.warning(
-                f"{feature_name}: current_date {current_date} missing from index"
-            )
-            return pd.DataFrame()
+    def add_specs(model_config):
+        features = model_config.get_feature_spec()
+        feature_specs.extend(features)
 
-    return df
+    add_specs(config.alpha_model)
+    add_specs(config.risk_model)
+    add_specs(config.tx_cost_model)
+    add_specs(config.portfolio_model)
+    add_specs(config.execution_model)
+
+    # Deduplicate by feature name + params (using FeatureSpec.__hash__)
+    unique_specs = list(set(feature_specs))
+    return unique_specs

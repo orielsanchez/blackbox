@@ -2,6 +2,8 @@ import importlib
 import pkgutil
 from typing import Any
 
+from .utils import collect_all_feature_specs
+
 # Module-level logger (populated by set_context)
 logger = None
 

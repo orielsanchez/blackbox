@@ -1,28 +1,51 @@
-import os
+from pathlib import Path
+from typing import Optional
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from blackbox.core.execution_loop import DailyLog
-
-# from pathlib import Path
+from blackbox.core.types.types import DailyLog
 
 
 def plot_equity_curve(
-    logs: list[DailyLog], run_id: str = "default", output_dir: str = "results"
+    logs: list[DailyLog],
+    run_id: str = "default",
+    output_dir: str = "results",
+    logger: Optional[object] = None,  # Optional RichLogger or print fallback
 ):
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = Path(output_dir)
+    output_path = output_dir / f"cumulative_equity_{run_id}.png"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    df = pd.DataFrame(
-        [{"date": log.date, "portfolio_value": log.portfolio.sum()} for log in logs]
-    )
+    # Extract equity data
+    records = [
+        {"date": log.date, "equity": log.equity}
+        for log in logs
+        if hasattr(log, "equity") and log.equity is not None
+    ]
+
+    if not records:
+        msg = "❌ No valid equity records found. Skipping plot."
+        (logger.warning if logger else print)(msg)
+        return
+
+    df = pd.DataFrame(records)
+    df["date"] = pd.to_datetime(df["date"])
     df.set_index("date", inplace=True)
     df.sort_index(inplace=True)
 
-    df["cum_return"] = df["portfolio_value"] / df["portfolio_value"].iloc[0]
+    # Calculate returns and drawdowns
+    df["cum_return"] = df["equity"] / df["equity"].iloc[0]
     df["rolling_max"] = df["cum_return"].cummax()
     df["drawdown"] = df["cum_return"] / df["rolling_max"] - 1
 
+    if df["cum_return"].isnull().all():
+        msg = "❌ Cumulative returns are all NaN. Check equity data."
+        (logger.warning if logger else print)(msg)
+        return
+
+    # Plot
     plt.figure(figsize=(12, 6))
     plt.plot(df.index, df["cum_return"], label="Equity Curve", linewidth=2)
     plt.fill_between(
@@ -32,8 +55,13 @@ def plot_equity_curve(
     plt.xlabel("Date")
     plt.ylabel("Cumulative Return")
     plt.legend()
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+    plt.xticks(rotation=45)
     plt.tight_layout()
 
-    output_path = os.path.join(output_dir, f"equity_{run_id}.png")
+    # Save
     plt.savefig(output_path)
     plt.close()
+
+    msg = f"✅ Equity curve saved to {output_path}"
+    (logger.info if logger else print)(msg)

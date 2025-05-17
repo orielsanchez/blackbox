@@ -4,7 +4,6 @@ from blackbox.models.interfaces import TransactionCostModel
 
 
 class QuadraticImpact(TransactionCostModel):
-    name = "quadratic_market_impact"
     """
     Transaction cost model that applies:
     - fixed commission on notional
@@ -21,32 +20,35 @@ class QuadraticImpact(TransactionCostModel):
         self.impact_coefficient = impact_coefficient
         self.min_commission = min_commission
 
-    def adjust(self, target: pd.Series, current: pd.Series) -> pd.Series:
+    @property
+    def name(self) -> str:
+        return "quadratic_market_impact"
+
+    def adjust(self, signals: pd.Series, features: pd.DataFrame) -> pd.Series:
         """
-        Shrink weights based on estimated costs from moving between current and target.
+        Adjusts signals based on estimated transaction costs.
 
-        Args:
-            target (pd.Series): Proposed target weights
-            current (pd.Series): Current portfolio weights
-
-        Returns:
-            pd.Series: Adjusted target weights
+        Assumes both `signals` and `current_position` are in weight (notional) space.
         """
-        delta = target.sub(current, fill_value=0.0)
+        if "current_position" in features.columns:
+            current = features["current_position"]
+        else:
+            current = pd.Series(0.0, index=signals.index)
 
-        adjusted = target.copy()
+        delta = signals.sub(current, fill_value=0.0).fillna(0.0)
+        adjusted = signals.copy()
 
-        for symbol, weight_change in delta.items():
-            notional = abs(weight_change)
+        cost_penalty = pd.Series(0.0, index=signals.index, dtype=float)
 
-            # Cost = linear + quadratic impact
+        for symbol, change in delta.items():
+            notional = abs(change)
             commission = max(self.commission_rate * notional, self.min_commission)
-            impact = self.impact_coefficient * (notional**2)
+            impact = self.impact_coefficient * notional**2
             total_cost = commission + impact
+            cost_penalty[symbol] = total_cost
 
-            # Reduce the proposed size to reflect the cost penalty
-            adjusted[symbol] = adjusted.get(symbol, 0.0) - total_cost * (
-                1 if weight_change > 0 else -1
-            )
+        # Apply cost as a shrinkage factor
+        shrinkage = 1.0 - cost_penalty.clip(upper=1.0)
+        adjusted *= shrinkage
 
         return adjusted
