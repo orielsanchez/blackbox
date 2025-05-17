@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -20,59 +21,66 @@ class RichLogger:
         level: str = "INFO",
         log_to_console: bool = True,
         log_to_file: bool = True,
-        log_file_path: str = "results/logs/blackbox.log",
+        log_file_path: Optional[str] = "results/logs/blackbox.log",
         module_filter: str = "",
         structured: bool = False,
     ):
         self.console = Console()
-        self._logger = logging.getLogger(name)
-        self._logger.setLevel(getattr(logging, level.upper()))
-        self._logger.handlers.clear()  # prevent duplicate logs
         self.structured = structured
 
+        # Configure logger
+        self._logger = logging.getLogger(name)
+        self._logger.setLevel(getattr(logging, level.upper()))
+        self._logger.handlers.clear()
+
         if module_filter:
+            self._logger.addFilter(self._build_module_filter(module_filter))
 
-            class ModuleFilter(logging.Filter):
-                def filter(self, record: logging.LogRecord) -> bool:
-                    return record.name.startswith(module_filter)
+        formatter = self._get_formatter(structured)
 
-            self._logger.addFilter(ModuleFilter())
+        if log_to_console:
+            self._add_console_handler(formatter)
 
-        # Minimal formatter (no timestamp, no level, no module name)
-        formatter = (
-            logging.Formatter(
+        if log_to_file and log_file_path:
+            self._add_file_handler(log_file_path, formatter)
+
+    def _build_module_filter(self, prefix: str) -> logging.Filter:
+        class ModuleFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                return record.name.startswith(prefix)
+
+        return ModuleFilter()
+
+    def _get_formatter(self, structured: bool) -> logging.Formatter:
+        if structured:
+            return logging.Formatter(
                 fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
-            if structured
-            else logging.Formatter("%(message)s")
+        return logging.Formatter("%(message)s")
+
+    def _add_console_handler(self, formatter: logging.Formatter) -> None:
+        console_handler = RichHandler(
+            console=self.console,
+            markup=True,
+            rich_tracebacks=True,
+            show_path=False,
+            show_level=False,
+            show_time=False,
         )
+        console_handler.setLevel(self._logger.level)
+        console_handler.setFormatter(formatter)
+        self._logger.addHandler(console_handler)
 
-        # Console output via rich
-        if log_to_console:
-            console_handler = RichHandler(
-                console=self.console,
-                markup=True,
-                rich_tracebacks=True,
-                show_path=False,
-                show_level=False,
-                show_time=False,
-            )
-            console_handler.setLevel(self._logger.level)
-            console_handler.setFormatter(formatter)
-            self._logger.addHandler(console_handler)
-
-        # File logging
-        if log_to_file:
-            Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            full_path = Path(log_file_path).with_name(
-                f"{Path(log_file_path).stem}_{timestamp}.log"
-            )
-            file_handler = logging.FileHandler(full_path)
-            file_handler.setLevel(self._logger.level)
-            file_handler.setFormatter(formatter)
-            self._logger.addHandler(file_handler)
+    def _add_file_handler(self, base_path: str, formatter: logging.Formatter) -> None:
+        base = Path(base_path)
+        base.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        full_path = base.with_name(f"{base.stem}_{timestamp}.log")
+        file_handler = logging.FileHandler(full_path)
+        file_handler.setLevel(self._logger.level)
+        file_handler.setFormatter(formatter)
+        self._logger.addHandler(file_handler)
 
     def debug(self, msg: str, *args, **kwargs):
         self._logger.debug(msg, *args, **kwargs)

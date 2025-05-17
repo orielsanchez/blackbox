@@ -11,12 +11,11 @@ from blackbox.core.types.types import DailyLog
 def plot_equity_curve(
     logs: list[DailyLog],
     run_id: str = "default",
-    output_dir: str = "results",
+    output_dir: Path = Path(),
     logger: Optional[object] = None,  # Optional RichLogger or print fallback
 ):
-    output_dir = Path(output_dir)
-    output_path = output_dir / f"cumulative_equity_{run_id}.png"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "cumulative_equity.png"
 
     # Extract equity data
     records = [
@@ -48,9 +47,7 @@ def plot_equity_curve(
     # Plot
     plt.figure(figsize=(12, 6))
     plt.plot(df.index, df["cum_return"], label="Equity Curve", linewidth=2)
-    plt.fill_between(
-        df.index, df["drawdown"], 0, color="red", alpha=0.3, label="Drawdown"
-    )
+    plt.fill_between(df.index, df["drawdown"], 0, color="red", alpha=0.3, label="Drawdown")
     plt.title(f"Equity Curve & Drawdowns — {run_id}")
     plt.xlabel("Date")
     plt.ylabel("Cumulative Return")

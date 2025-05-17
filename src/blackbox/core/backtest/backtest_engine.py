@@ -1,5 +1,8 @@
 import traceback
+from pathlib import Path
 from typing import List
+
+import pandas as pd
 
 from blackbox.core.backtest.process_day import process_trading_day
 from blackbox.core.types.context import PreparedDataBundle, StrategyContext
@@ -27,7 +30,6 @@ def log_backtest_day(logger, log: DailyLog, previous_equity: float | None = None
     elif pnl < -50:
         pnl_str = f"🔴 -${abs(pnl):,.2f}"
 
-    # Only log if something happened
     if delta_trades > 0 or abs(pnl) > 1.0:
         logger.info(
             f"[{date}] "
@@ -39,14 +41,16 @@ def log_backtest_day(logger, log: DailyLog, previous_equity: float | None = None
         )
 
         if log.trades is not None and not log.trades.empty:
-            top_traded = (
-                log.trades.abs().sort_values(ascending=False).head(3).index.tolist()
-            )
+            top_traded = log.trades.abs().sort_values(ascending=False).head(3).index.tolist()
             logger.debug(f"[{date}] 🚀 Top traded: {', '.join(top_traded)}")
 
 
-def run_backtest_loop(ctx: StrategyContext, data: PreparedDataBundle) -> List[DailyLog]:
+def run_backtest_loop(
+    ctx: StrategyContext, data: PreparedDataBundle, output_dir: Path
+) -> List[DailyLog]:
     logs: list[DailyLog] = []
+    trade_records: list[dict] = []
+    previous_portfolio: dict[str, float] = {}
 
     matrix = data.feature_matrix
     warmup = data.metadata.warmup
@@ -70,16 +74,12 @@ def run_backtest_loop(ctx: StrategyContext, data: PreparedDataBundle) -> List[Da
                 try:
                     features_today = matrix.xs(date, level="date", drop_level=False)
                 except KeyError:
-                    logger.warning(
-                        f"[{date.date()}] ⚠️ No features for this date — skipping"
-                    )
+                    logger.warning(f"[{date.date()}] ⚠️ No features for this date — skipping")
                     progress.advance(task)
                     continue
 
                 start_idx = max(0, idx - warmup)
-                window_dates = [
-                    d for d in valid_dates[start_idx : idx + 1] if d <= date
-                ]
+                window_dates = [d for d in valid_dates[start_idx : idx + 1] if d <= date]
                 features_window = matrix.loc[
                     matrix.index.get_level_values("date").isin(window_dates)
                 ]
@@ -93,8 +93,54 @@ def run_backtest_loop(ctx: StrategyContext, data: PreparedDataBundle) -> List[Da
 
                 prev_equity = logs[-1].equity if logs else None
                 log_backtest_day(logger, log, previous_equity=prev_equity)
-
                 logs.append(log)
+
+                # Record new/adjust trades
+                if log.trades is not None and not log.trades.empty:
+                    for symbol, weight in log.trades.items():
+                        if abs(weight) < 1e-8:
+                            continue
+
+                        prev_weight = previous_portfolio.get(symbol, 0.0)
+                        action = "adjust"
+                        if abs(prev_weight) < 1e-8:
+                            action = "enter"
+
+                        price = log.prices.get(symbol, float("nan"))
+                        notional = weight * price * log.equity if price and log.equity else 0.0
+                        trade_records.append(
+                            {
+                                "date": log.date.strftime("%Y-%m-%d"),
+                                "symbol": symbol,
+                                "weight": float(weight),
+                                "price": float(price),
+                                "notional": float(notional),
+                                "action": action,
+                            }
+                        )
+
+                # Record full exits
+                if log.portfolio is not None:
+                    exited_symbols = {
+                        sym: prev_weight
+                        for sym, prev_weight in previous_portfolio.items()
+                        if abs(prev_weight) > 1e-8 and sym not in log.portfolio.index
+                    }
+                    for symbol, old_weight in exited_symbols.items():
+                        trade_records.append(
+                            {
+                                "date": log.date.strftime("%Y-%m-%d"),
+                                "symbol": symbol,
+                                "weight": 0.0,
+                                "price": float(log.prices.get(symbol, float("nan"))),
+                                "notional": 0.0,
+                                "action": "exit",
+                            }
+                        )
+
+                # Update state for next day
+                if log.portfolio is not None:
+                    previous_portfolio = log.portfolio.to_dict()
 
             except Exception as e:
                 logger.error(f"[{date.date()}] ❌ Exception during trading day: {e}")
@@ -103,8 +149,15 @@ def run_backtest_loop(ctx: StrategyContext, data: PreparedDataBundle) -> List[Da
             progress.advance(task)
 
     logger.info(f"✅ Backtest complete — {len(logs)} trading days processed")
-
     inspect_equity_spikes(logs)
+
+    if trade_records:
+        df_trades = pd.DataFrame(trade_records)
+        trades_path = output_dir / "trades.csv"
+        df_trades.sort_values(by=["date", "symbol"], inplace=True)
+        df_trades.to_csv(trades_path, index=False)
+        logger.info(f"📄 Saved trades to {trades_path}")
+
     return logs
 
 

@@ -33,7 +33,8 @@ build/
 
 # === Results and Outputs ===
 data
-results/
+results
+runs
 db
 *.csv
 *.parquet

@@ -28,7 +28,7 @@ def run_backtest(
     use_cached_features: bool = True,
     refresh_data: bool = False,
     plot_equity: bool = False,
-    output_dir: Optional[Path] = None,
+    output_dir: Path = Path(),
 ) -> None:
     # Load config and logger
     config: BacktestConfig = load_config(config_path)
@@ -68,6 +68,7 @@ def run_backtest(
         config_start_date=config.start_date,
         config_end_date=config.end_date,
         logger=logger,
+        output_dir=output_dir,
     )
 
     # Create runtime strategy context
@@ -106,7 +107,7 @@ def run_backtest(
         ),
     )
 
-    logs = run_backtest_loop(context, data)
+    logs = run_backtest_loop(context, data, output_dir)
 
     # Compute performance metrics
     metrics_calculator = PerformanceMetrics(
@@ -117,10 +118,9 @@ def run_backtest(
         pd.DataFrame([log.__dict__ for log in logs]), return_equity=True
     )
 
-    metrics = BacktestMetrics(summary=metrics_dict, equity_curve=equity_curve)
+    assert isinstance(equity_curve, pd.Series), "equity_curve must be a pandas Series"
 
-    if output_dir is None:
-        output_dir = Path("results") / config.run_id
+    metrics = BacktestMetrics(summary=metrics_dict, equity_curve=equity_curve)
 
     if plot_equity:
         from blackbox.utils.plotting import plot_equity_curve
