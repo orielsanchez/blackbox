@@ -14,11 +14,11 @@ data:
   force_reload: false       # Reload from source even if cache exists
 
 alpha_model:
-  name: mean_reversion
+  name: mean_reversion2
   params:
     threshold: 0.15          # Entry signal threshold for trading
     features:
-      - name: zscore_price  # Price z-score over lookback period
+      - name: rolling_zscore  # Price z-score over lookback period
         params:
           period: 10
       - name: bollinger_band  # Normalized position inside Bollinger bands
