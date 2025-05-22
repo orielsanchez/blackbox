@@ -1,0 +1,122 @@
+
+run_id: regime_composite  # Unique ID for this backtest run
+start_date: '2024-05-03'
+end_date: '2025-05-02'
+
+universe_file: universe/top_500_by_volume.csv
+
+verbose: false
+
+data:
+  db_path: db/ohlcv.duckdb
+  rolling: true
+  window: 50               # Allow enough room for ADX, EMA
+  cache_path: auto
+  force_reload: false
+
+alpha_model:
+  name: composite_regime_aware_alpha
+  params:
+    regime_feature: adx_14
+    trend_threshold: 25.0
+    universe: null
+
+    # ── Mean-Reversion Submodel ───────────────────────────────────────────
+    mean_reversion_model:
+      name: mean_reversion2
+      params:
+        threshold: 0.3
+        features:
+          - name: adx
+            params:
+              period: 14
+          - name: bollinger_band
+            params:
+              period: 10
+              std_dev: 1.5
+          - name: ewma_volatility
+            params:
+              span: 10
+              col: close
+              output: ewm_vol_10
+          - name: rolling_zscore
+            params:
+              period: 10
+          - name: rsi
+            params:
+              period: 14
+              col: close
+
+    # ── Momentum Submodel ─────────────────────────────────────────────────
+    momentum_model:
+      name: momentum_alpha
+      params:
+        universe: null
+        verbose: false
+        min_signal_threshold: 0.01
+        signal_weights:
+          momentum_short: 0.4
+          momentum_long: 0.4
+          ema_diff: 0.2
+        features:
+          - name: momentum
+            params:
+              period: 5
+          - name: momentum
+            params:
+              period: 20
+          - name: ema_crossover
+            params:
+              short: 10
+              long: 50
+
+# ── Risk Model ────────────────────────────────────────────────────────────
+risk_model:
+  name: ewma_volatility
+  params:
+    max_volatility: 0.3
+    volatility_column: ewm_vol_10
+    allow_shorts: true
+
+# ── Transaction Cost Model ────────────────────────────────────────────────
+tx_cost_model:
+  name: fixed
+  params:
+    slippage: 0.0001
+    commission: 0.000001
+
+# ── Portfolio Model ───────────────────────────────────────────────────────
+portfolio_model:
+  name: volatility_scaled
+  params:
+    vol_lookback: 5
+    risk_target: 1.5
+    max_weight: 0.5
+    min_notional: 1.0
+    min_price: 1.0
+    max_dollar_per_symbol: 5000.0
+    max_turnover: 0.5
+    max_trades_per_day: 50
+
+# ── Execution Model ───────────────────────────────────────────────────────
+execution_model:
+  name: market2
+  params:
+    slippage: 0.0002
+    commission: 0.00005
+    fractional: true
+    allow_shorts: true
+    min_notional: 1.0
+    execution_method: market
+
+# ── Backtest Settings ─────────────────────────────────────────────────────
+initial_portfolio_value: 10000
+min_holding_period: 2
+settlement_delay: 1
+plot_equity: true
+risk_free_rate: 0.0
+
+log_level: INFO
+log_to_console: true
+log_to_file: true
+structured_logging: false

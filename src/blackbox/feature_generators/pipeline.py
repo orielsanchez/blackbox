@@ -66,4 +66,15 @@ class FeaturePipeline:
             self.logger.warning("⚠️ Feature pipeline produced no usable outputs")
             return pd.DataFrame()
 
-        return pd.concat(feature_frames, axis=1)
+        features_df = pd.concat(feature_frames, axis=1)
+
+        # ✅ Force correct index structure
+        if not isinstance(
+            features_df.index, pd.MultiIndex
+        ) or features_df.index.names != [
+            "date",
+            "symbol",
+        ]:
+            features_df.index.names = ["date", "symbol"]
+
+        return features_df

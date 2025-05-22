@@ -36,6 +36,9 @@ class FeatureMatrixGenerator:
         self.logger.info(f"🔄 Running feature pipeline over {len(ohlcv)} rows...")
         full_features = self.pipeline.run(ohlcv)
 
+        self.logger.info("📎 Feature index: %s", full_features.index)
+        self.logger.info("📎 Index names: %s", full_features.index.names)
+
         earliest_feature_date = full_features.index.get_level_values("date").min()
         latest_feature_date = full_features.index.get_level_values("date").max()
         self.logger.info(

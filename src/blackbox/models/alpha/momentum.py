@@ -1,54 +1,111 @@
+from typing import Dict, List, Optional
+
 import pandas as pd
 
-import blackbox.feature_generators
 from blackbox.feature_generators.pipeline import FeaturePipeline
 from blackbox.models.interfaces import AlphaModel
+from blackbox.utils.context import get_logger
+from blackbox.utils.signals import normalize_signal
 
 
 class MomentumAlphaModel(AlphaModel):
-    name = "momentum_alpha"
+    def __init__(
+        self,
+        short_momentum: int = 5,
+        long_momentum: int = 20,
+        ema_short: int = 10,
+        ema_long: int = 50,
+        signal_weights: Optional[Dict[str, float]] = None,
+        min_signal_threshold: float = 0.01,
+        universe: Optional[List[str]] = None,
+        verbose: bool = False,
+    ):
+        self.short_momentum = short_momentum
+        self.long_momentum = long_momentum
+        self.ema_short = ema_short
+        self.ema_long = ema_long
+        self.min_signal_threshold = min_signal_threshold
+        self.universe = universe or []
+        self.verbose = verbose
+        self.logger = get_logger()
 
-    def __init__(self):
+        self.signal_weights = signal_weights or {
+            "momentum_short": 0.4,
+            "momentum_long": 0.4,
+            "ema_diff": 0.2,
+        }
+
         self.feature_pipeline = FeaturePipeline(
             [
-                {"name": "momentum", "params": {"period": 5}},
-                {"name": "momentum", "params": {"period": 20}},
-                {"name": "ema_crossover", "params": {"short": 10, "long": 50}},
+                {"name": "momentum", "params": {"period": self.short_momentum}},
+                {"name": "momentum", "params": {"period": self.long_momentum}},
+                {
+                    "name": "ema_crossover",
+                    "params": {"short": self.ema_short, "long": self.ema_long},
+                },
             ]
         )
 
-    def predict(self, snapshot: dict) -> pd.Series:
-        """Alias for generate to support standard ML interface"""
-        return self.generate(snapshot)
+    @property
+    def name(self) -> str:
+        return "momentum_alpha"
 
-    def generate(self, snapshot: dict) -> pd.Series:
+    def predict(self, features: pd.DataFrame) -> pd.Series:
         """
-        snapshot = {
-            "date": pd.Timestamp,
-            "prices": pd.Series,
-            "ohlcv": pd.DataFrame  # MultiIndex: (date, symbol)
-        }
+        Args:
+            features: pd.DataFrame with MultiIndex [date, symbol]
         Returns:
-            pd.Series [symbol → signal]
+            pd.Series [symbol → signal] for a single date
         """
-        ohlcv = snapshot["ohlcv"]
-        today = snapshot["date"]
+        if not isinstance(features.index, pd.MultiIndex):
+            raise ValueError("Expected MultiIndex [date, symbol]")
 
-        # Run pipeline
-        features = self.feature_pipeline.run(ohlcv)
+        if features.index.names != ["date", "symbol"]:
+            raise ValueError(
+                f"Expected index names ['date', 'symbol'], got {features.index.names}"
+            )
 
-        # Get latest feature values
-        try:
-            f = features.loc[today]
-        except KeyError:
-            return pd.Series(dtype=float)
+        if not features.index.is_monotonic_increasing:
+            self.logger.warning("⚠️ Feature index not sorted. Sorting now.")
+            features = features.sort_index()
 
-        # Combine signals: weighted average
+        date = features.index.get_level_values("date").unique()
+        if len(date) != 1:
+            raise ValueError(f"Expected single date, got {date.tolist()}")
+        date = date[0]
+
+        features_today = features.loc[pd.IndexSlice[date, :], :]
+
+        if self.universe:
+            symbols = features_today.index.get_level_values("symbol").unique()
+            filtered_symbols = symbols.intersection(self.universe)
+            features_today = features_today.loc[pd.IndexSlice[:, filtered_symbols], :]
+
+        if features_today.empty:
+            self.logger.warning(f"{date} | ⚠️ No features for universe")
+            return pd.Series(0.0, index=features_today.index, name="momentum_signal")
+
+        col_short = f"momentum_{self.short_momentum}"
+        col_long = f"momentum_{self.long_momentum}"
+        col_ema_diff = f"ema_{self.ema_short}_{self.ema_long}_diff"
+
+        for col in [col_short, col_long, col_ema_diff]:
+            if col not in features_today.columns:
+                self.logger.warning(f"{date} | ⚠️ Missing expected feature: {col}")
+                return pd.Series(dtype=float)
+
         score = (
-            0.4 * f["momentum_5d"] + 0.4 * f["momentum_20d"] + 0.2 * f["ema_10_50_diff"]
+            self.signal_weights["momentum_short"] * features_today[col_short]
+            + self.signal_weights["momentum_long"] * features_today[col_long]
+            + self.signal_weights["ema_diff"] * features_today[col_ema_diff]
         )
 
-        # Optional: Zero out weak signals
-        score = score.where(score.abs() > 0.01, 0)
+        score = score.where(score.abs() > self.min_signal_threshold, 0.0)
+        normalized = normalize_signal(score)
 
-        return score.fillna(0)
+        if self.verbose:
+            self.logger.info(
+                f"{date} | Momentum signal stats: mean={normalized.mean():.3f}, std={normalized.std():.3f}"
+            )
+
+        return normalized
