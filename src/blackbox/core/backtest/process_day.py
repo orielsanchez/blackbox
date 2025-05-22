@@ -34,7 +34,6 @@ def process_trading_day(
         execution_result: TradeResult = None
 
         pending_orders = getattr(ctx.tracker, "get_pending_orders", lambda: None)()
-
         if isinstance(pending_orders, pd.DataFrame) and not pending_orders.empty:
             logger.debug(
                 f"[{date.date()}] Executing {len(pending_orders)} pending orders"
@@ -47,7 +46,6 @@ def process_trading_day(
             )
 
             capital_at_open = ctx.tracker.compute_portfolio_value(snapshot.open)
-
             execution_result = simulate_execution(
                 trades=pending_orders["trade"],
                 prices=snapshot.open,
@@ -120,6 +118,23 @@ def process_trading_day(
         )
         feedback = {} if execution_result is None else execution_result.feedback
 
+        # ════════════════════════════════════════════════
+        # 🧠 Calculate IC (Information Coefficient)
+        # ════════════════════════════════════════════════
+
+        ic = None
+        if snapshot.next_close is not None:
+            try:
+                forward_returns = (snapshot.next_close / snapshot.close - 1).dropna()
+                signals_today = raw_signals.reset_index("date", drop=True)
+                valid = signals_today.index.intersection(forward_returns.index)
+
+                if not valid.empty:
+                    ic = signals_today.loc[valid].corr(forward_returns.loc[valid])
+                    logger.info(f"[{date.date()}] 🧠 Info Coefficient (IC): {ic:.4f}")
+            except Exception as e:
+                logger.warning(f"[{date.date()}] ⚠️ Failed to compute IC: {e}")
+
         return DailyLog(
             date=date,
             prices=snapshot.close,
@@ -130,6 +145,7 @@ def process_trading_day(
             cash=cash,
             pnl=pnl,
             drawdown=drawdown,
+            ic=ic,
         )
     except Exception as e:
         logger.exception(f"[{snapshot.date}] ⚠️ Exception in trading day: {e}")

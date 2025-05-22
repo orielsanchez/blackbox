@@ -15,6 +15,7 @@ class DailyLog:
     cash: float = 0.0
     pnl: float = 0.0
     drawdown: float = 0.0
+    ic: Optional[float] = None
 
 
 @dataclass
@@ -25,6 +26,7 @@ class OHLCVSnapshot:
     high: pd.Series
     low: pd.Series
     volume: pd.Series
+    next_close: Optional[pd.Series] = None
     other: dict[str, pd.Series] = field(default_factory=dict)
 
 

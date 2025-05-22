@@ -118,6 +118,32 @@ def run_backtest(
         pd.DataFrame([log.__dict__ for log in logs]), return_equity=True
     )
 
+    # Save IC timeseries and plot
+    df_logs = pd.DataFrame([log.__dict__ for log in logs])
+    df_logs.set_index("date", inplace=True)
+    df_logs.sort_index(inplace=True)
+
+    ic_series = df_logs["ic"].dropna()
+    if not ic_series.empty:
+        ic_csv_path = output_dir / "ic_timeseries.csv"
+        ic_plot_path = output_dir / "ic_plot.png"
+
+        ic_series.to_csv(ic_csv_path)
+        logger.info(f"📄 Saved IC timeseries to {ic_csv_path}")
+
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 4))
+        ic_series.plot(title="Daily Information Coefficient (IC)")
+        plt.axhline(0, color="gray", linestyle="--", linewidth=1)
+        plt.ylabel("IC")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(ic_plot_path)
+        plt.close()
+
+        logger.info(f"📈 Saved IC plot to {ic_plot_path}")
+
     assert isinstance(equity_curve, pd.Series), "equity_curve must be a pandas Series"
 
     metrics = BacktestMetrics(summary=metrics_dict, equity_curve=equity_curve)
@@ -142,9 +168,6 @@ def run_backtest(
 
     logger.console.print(table)
 
-    # Save outputs
-    if output_dir is None:
-        output_dir = Path("results") / config.run_id
     write_results(
         logs,
         metrics,

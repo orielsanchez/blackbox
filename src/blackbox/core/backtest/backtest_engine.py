@@ -1,4 +1,5 @@
 import traceback
+from numbers import Number
 from pathlib import Path
 from typing import List
 
@@ -10,39 +11,36 @@ from blackbox.core.types.types import DailyLog
 
 
 def log_backtest_day(logger, log: DailyLog, previous_equity: float | None = None):
-    from numbers import Number
-
     date = log.date.date()
 
-    def safe_float(x, default=0.0):
-        return float(x) if isinstance(x, Number) else default
+    def safe(x: float | None) -> float:
+        return float(x) if isinstance(x, Number) else 0.0
 
-    equity = safe_float(log.equity)
-    cash = safe_float(log.cash)
-    drawdown = safe_float(log.drawdown)
+    equity, cash, drawdown = map(safe, (log.equity, log.cash, log.drawdown))
     pnl = equity - previous_equity if previous_equity is not None else 0.0
-    delta_trades = log.trades.astype(bool).sum() if log.trades is not None else 0
+    n_trades = log.trades.astype(bool).sum() if log.trades is not None else 0
 
-    drawdown_pct_str = f"{drawdown:6.2f}%" if drawdown else "   0.00%"
     pnl_str = f"${pnl:,.2f}"
     if pnl > 50:
         pnl_str = f"🟢 +{pnl_str}"
     elif pnl < -50:
         pnl_str = f"🔴 -${abs(pnl):,.2f}"
 
-    if delta_trades > 0 or abs(pnl) > 1.0:
+    if n_trades > 0 or abs(pnl) > 1.0:
         logger.info(
-            f"[{date}] "
-            f"💰 Equity: ${equity:>10,.2f} | "
+            f"[{date}] 💰 Equity: ${equity:>10,.2f} | "
             f"💵 Cash: ${cash:>10,.2f} | "
-            f"📉 Drawdown: {drawdown_pct_str} | "
-            f"🔄 Trades: {delta_trades:>3d} | "
+            f"📉 Drawdown: {drawdown:6.2f}% | "
+            f"🔄 Trades: {n_trades:>3d} | "
             f"💹 PnL: {pnl_str:>10}"
         )
 
+        if log.ic is not None:
+            logger.info(f"[{date}] 🔗 Information Coefficient (IC): {log.ic:.4f}")
+
         if log.trades is not None and not log.trades.empty:
-            top_traded = log.trades.abs().sort_values(ascending=False).head(3).index.tolist()
-            logger.debug(f"[{date}] 🚀 Top traded: {', '.join(top_traded)}")
+            top = log.trades.abs().nlargest(3).index.tolist()
+            logger.debug(f"[{date}] 🚀 Top traded: {', '.join(top)}")
 
 
 def run_backtest_loop(
@@ -56,8 +54,8 @@ def run_backtest_loop(
     warmup = data.metadata.warmup
     valid_dates = sorted(data.metadata.dates)
     snapshots = data.snapshots
-
     logger = ctx.logger
+
     logger.info(f"▶️ Starting backtest over {len(snapshots)} days")
 
     with logger.progress() as progress:
@@ -65,7 +63,6 @@ def run_backtest_loop(
 
         for idx, snapshot in enumerate(snapshots):
             date = snapshot.date
-
             if date < data.metadata.min_date or date not in data.metadata.dates:
                 progress.advance(task)
                 continue
@@ -74,40 +71,37 @@ def run_backtest_loop(
                 try:
                     features_today = matrix.xs(date, level="date", drop_level=False)
                 except KeyError:
-                    logger.warning(f"[{date.date()}] ⚠️ No features for this date — skipping")
+                    logger.warning(
+                        f"[{date.date()}] ⚠️ No features for this date — skipping"
+                    )
                     progress.advance(task)
                     continue
 
                 start_idx = max(0, idx - warmup)
-                window_dates = [d for d in valid_dates[start_idx : idx + 1] if d <= date]
+                window_dates = [
+                    d for d in valid_dates[start_idx : idx + 1] if d <= date
+                ]
                 features_window = matrix.loc[
                     matrix.index.get_level_values("date").isin(window_dates)
                 ]
 
                 log = process_trading_day(
-                    snapshot=snapshot,
-                    features_today=features_today,
-                    features_window=features_window,
-                    ctx=ctx,
+                    snapshot, features_today, features_window, ctx
                 )
-
                 prev_equity = logs[-1].equity if logs else None
                 log_backtest_day(logger, log, previous_equity=prev_equity)
                 logs.append(log)
 
-                # Record new/adjust trades
                 if log.trades is not None and not log.trades.empty:
                     for symbol, weight in log.trades.items():
                         if abs(weight) < 1e-8:
                             continue
-
                         prev_weight = previous_portfolio.get(symbol, 0.0)
-                        action = "adjust"
-                        if abs(prev_weight) < 1e-8:
-                            action = "enter"
-
+                        action = "adjust" if abs(prev_weight) >= 1e-8 else "enter"
                         price = log.prices.get(symbol, float("nan"))
-                        notional = weight * price * log.equity if price and log.equity else 0.0
+                        notional = (
+                            weight * price * log.equity if price and log.equity else 0.0
+                        )
                         trade_records.append(
                             {
                                 "date": log.date.strftime("%Y-%m-%d"),
@@ -119,14 +113,14 @@ def run_backtest_loop(
                             }
                         )
 
-                # Record full exits
+                # Detect full exits
                 if log.portfolio is not None:
-                    exited_symbols = {
-                        sym: prev_weight
-                        for sym, prev_weight in previous_portfolio.items()
-                        if abs(prev_weight) > 1e-8 and sym not in log.portfolio.index
+                    exited = {
+                        sym: w
+                        for sym, w in previous_portfolio.items()
+                        if abs(w) > 1e-8 and sym not in log.portfolio.index
                     }
-                    for symbol, old_weight in exited_symbols.items():
+                    for symbol in exited:
                         trade_records.append(
                             {
                                 "date": log.date.strftime("%Y-%m-%d"),
@@ -138,7 +132,6 @@ def run_backtest_loop(
                             }
                         )
 
-                # Update state for next day
                 if log.portfolio is not None:
                     previous_portfolio = log.portfolio.to_dict()
 
@@ -162,23 +155,20 @@ def run_backtest_loop(
 
 
 def inspect_equity_spikes(logs: list[DailyLog], threshold: float = 30.0):
-    previous_equity = None
-
+    prev_equity = None
     for log in logs:
         equity = float(log.equity or 0.0)
         date = log.date.date()
-        pnl = equity - previous_equity if previous_equity is not None else 0.0
+        pnl = equity - prev_equity if prev_equity is not None else 0.0
 
         if pnl > threshold:
             print(f"\n⚠️ Spike on {date} — PnL: ${pnl:.2f}, Equity: ${equity:.2f}")
             print(f"Cash: ${log.cash:.2f} | Trades: {log.trades.astype(bool).sum()}")
-
             if log.trades is not None and not log.trades.empty:
-                top = log.trades.abs().sort_values(ascending=False).head(5)
+                top = log.trades.abs().nlargest(5)
                 for symbol in top.index:
-                    weight = log.trades[symbol]
-                    print(f" - {symbol}: weight={weight:.4f}")
+                    print(f" - {symbol}: weight={log.trades[symbol]:.4f}")
             else:
                 print("No trades recorded.")
 
-        previous_equity = equity
+        prev_equity = equity

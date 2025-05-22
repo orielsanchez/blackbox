@@ -1,5 +1,6 @@
 from typing import Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
@@ -13,16 +14,6 @@ class PerformanceMetrics:
     def compute_metrics(
         self, history: pd.DataFrame, return_equity: bool = False
     ) -> Union[dict[str, float | str], tuple[dict[str, float | str], pd.Series]]:
-        """
-        Compute key performance metrics from backtest history.
-
-        Parameters:
-            history (pd.DataFrame): Must contain an 'equity' column and datetime index or 'date' column.
-            return_equity (bool): If True, also return the equity curve as a Series.
-
-        Returns:
-            dict or (dict, Series): Metrics dictionary, and optionally the equity curve.
-        """
         history = history.copy()
 
         # Ensure datetime index
@@ -53,8 +44,9 @@ class PerformanceMetrics:
             annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
         )
 
-        start_date = str(pd.Timestamp(equity.index.min()).date())
-        end_date = str(pd.Timestamp(equity.index.max()).date())
+        start_date = str(equity.index.min().date())
+        end_date = str(equity.index.max().date())
+
         metrics = {
             "Start Equity": round(equity.iloc[0], 2),
             "End Equity": round(equity.iloc[-1], 2),
@@ -66,9 +58,35 @@ class PerformanceMetrics:
             "Max Drawdown (%)": round(max_drawdown * 100, 2),
             "Calmar Ratio": round(calmar_ratio, 3),
             "R squared": round(r_squared, 4),
-            "Start Date": str(start_date),
-            "End Date": str(end_date),
+            "Start Date": start_date,
+            "End Date": end_date,
         }
+
+        # ✅ Add IC metrics if available
+        if "ic" in history.columns:
+            ic_series = history["ic"].dropna()
+            if not ic_series.empty:
+                avg_ic = ic_series.mean()
+                std_ic = ic_series.std()
+                ir = avg_ic / std_ic if std_ic != 0 else 0.0
+
+                metrics.update(
+                    {
+                        "Avg Information Coefficient": round(avg_ic, 4),
+                        "IC StdDev": round(std_ic, 4),
+                        "Information Ratio": round(ir, 4),
+                    }
+                )
+
+                # Export IC timeseries
+                ic_series.to_csv("runs/ic_timeseries.csv")
+
+                # Plot IC timeseries
+                plt.figure(figsize=(10, 3))
+                ic_series.plot(title="Daily Information Coefficient (IC)")
+                plt.axhline(0, linestyle="--", color="gray")
+                plt.tight_layout()
+                plt.savefig("runs/ic_timeseries.png")
 
         return (metrics, equity) if return_equity else metrics
 
