@@ -34,6 +34,8 @@ class PortfolioTarget:
     weights: pd.Series
     capital: float
     signals: Optional[pd.Series] = None
+    execution_method: str = "market"
+    limit_prices: Optional[pd.Series] = None
 
 
 @dataclass

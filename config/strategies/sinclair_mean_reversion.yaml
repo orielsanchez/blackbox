@@ -13,30 +13,42 @@ data:
   cache_path: auto          # Cache location for feature matrix
   force_reload: false       # Reload from source even if cache exists
 
+
 alpha_model:
   name: mean_reversion2
   params:
-    threshold: 0.15          # Entry signal threshold for trading
+    threshold: 0.3  # Entry threshold for trading signal
     features:
-      - name: rolling_zscore  # Price z-score over lookback period
+      # RSI used as a filter for mean-reversion regime
+      - name: rsi
+        params:
+          period: 14
+          col: close
+
+      # Main signal drivers
+      - name: rolling_zscore
         params:
           period: 10
-      - name: bollinger_band  # Normalized position inside Bollinger bands
+
+      - name: bollinger_band
         params:
           period: 10
           std_dev: 1.5
-      - name: ewma_volatility  # Smoothed volatility used by risk model
+
+      # Volatility used by risk model
+      - name: ewma_volatility
         params:
           span: 10
           col: close
           output: ewm_vol_10
 
+
 risk_model:
   name: ewma_volatility
   params:
-    max_volatility: 0.15     # Filter out high-volatility stocks
+    max_volatility: 0.3     # Filter out high-volatility stocks
     volatility_column: ewm_vol_10  # Feature column to use
-    allow_shorts: false       # Allow short positions
+    allow_shorts: true       # Allow short positions
 
 tx_cost_model:
   name: fixed
@@ -50,23 +62,24 @@ portfolio_model:
     vol_lookback: 5          # Volatility lookback for scaling weights
     risk_target: 1.5         # Target portfolio risk (annualized)
     max_weight: 0.5         # Max absolute weight per asset
-    min_notional: 5.0       # Ignore trades smaller than this
+    min_notional: 1.0       # Ignore trades smaller than this
     min_price: 1.0           # Filter out penny stocks
     max_dollar_per_symbol: 5000.0  # Cap per-symbol dollar exposure
     max_turnover: 0.5        # Cap on total daily turnover (∑|delta weights|)
-    max_trades_per_day: 200   # Max # of symbols traded in a single day
+    max_trades_per_day: 50   # Max # of symbols traded in a single day
 
 execution_model:
-  name: market
+  name: market2
   params:
     slippage: 0.0002         # % execution slippage
     commission: 0.00005      # Commission per share traded
     fractional: true         # Allow fractional shares
     allow_shorts: false      # Restrict to long-only execution
     min_notional: 10.0       # Filter trades below this size
+    execution_method: market
 
 initial_portfolio_value: 10000  # Starting cash value for portfolio
-min_holding_period: 1           # Enforce minimum holding days per trade
+min_holding_period: 2           # Enforce minimum holding days per trade
 settlement_delay: 1             # T+1 cash settlement model
 plot_equity: true               # Save equity curve plot
 risk_free_rate: 0.0             # Used for Sharpe/Sortino calc
