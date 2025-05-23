@@ -45,4 +45,3 @@ def plot_signal_vs_next_return(
     plt.ylabel("Next-Day Return")
     plt.legend()
     plt.tight_layout()
-    plt.show()

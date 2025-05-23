@@ -45,8 +45,12 @@ class MeanReversionAlphaModel(AlphaModel):
             self.logger.info(f"📅 Processing alpha for {date}")
 
         all_symbols = features.index.get_level_values("symbol").unique()
-        symbols = all_symbols.intersection(self.universe) if self.universe else all_symbols
-        full_index = pd.MultiIndex.from_product([[date], symbols], names=["date", "symbol"])
+        symbols = (
+            all_symbols.intersection(self.universe) if self.universe else all_symbols
+        )
+        full_index = pd.MultiIndex.from_product(
+            [[date], symbols], names=["date", "symbol"]
+        )
 
         if features.empty or symbols.empty:
             self.logger.warning(f"{date} | ⚠️ No symbols or features after filtering")
@@ -72,7 +76,9 @@ class MeanReversionAlphaModel(AlphaModel):
             if name == "rsi":
                 rsi_col = col
             else:
-                signal_part = -features_today[col] if "zscore" in name else features_today[col]
+                signal_part = (
+                    -features_today[col] if "zscore" in name else features_today[col]
+                )
                 signal_parts.append(signal_part)
 
         if not signal_parts:
@@ -88,14 +94,14 @@ class MeanReversionAlphaModel(AlphaModel):
         raw_score = raw_score.dropna()
 
         if raw_score.empty or raw_score.std() == 0:
-            self.logger.warning(f"{date} | ⚠️ Signal degenerate — empty or zero std")
+            self.logger.debug(f"{date} | ⚠️ Signal degenerate — empty or zero std")
             return pd.Series(0.0, index=full_index, name="mean_reversion_signal")
 
         normalized = normalize_signal(raw_score)
 
         strong = normalized[normalized.abs() >= self.threshold]
 
-        self.logger.info(
+        self.logger.debug(
             f"{date} | Signal stats: mean={normalized.mean():.4f}, std={normalized.std():.4f}, n_strong={len(strong)}"
         )
 

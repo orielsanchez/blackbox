@@ -131,7 +131,7 @@ def process_trading_day(
 
                 if not valid.empty:
                     ic = signals_today.loc[valid].corr(forward_returns.loc[valid])
-                    logger.info(f"[{date.date()}] 🧠 Info Coefficient (IC): {ic:.4f}")
+                    logger.debug(f"[{date.date()}] 🧠 Info Coefficient (IC): {ic:.4f}")
             except Exception as e:
                 logger.warning(f"[{date.date()}] ⚠️ Failed to compute IC: {e}")
 

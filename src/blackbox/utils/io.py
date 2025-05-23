@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -19,62 +21,86 @@ def write_results(
     equity_curve: pd.Series,
     plot_equity: bool = True,
 ) -> None:
+    """
+    Save logs, metrics, config, and equity curve for a backtest run.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ────── Save daily logs ──────
-    df_logs = pd.DataFrame(
-        {
-            "date": [log.date for log in logs],
-            "equity": [log.equity for log in logs],
-            "cash": [log.cash for log in logs],
-            "pnl": [log.pnl for log in logs],
-            "drawdown": [log.drawdown for log in logs],
-            "num_trades": [log.trades.astype(bool).sum() for log in logs],
-        }
+    # Daily logs
+    df_logs = (
+        pd.DataFrame(
+            {
+                "date": [log.date for log in logs],
+                "equity": [log.equity for log in logs],
+                "cash": [log.cash for log in logs],
+                "pnl": [log.pnl for log in logs],
+                "drawdown": [log.drawdown for log in logs],
+                "num_trades": [log.trades.astype(bool).sum() for log in logs],
+            }
+        )
+        .set_index("date")
+        .sort_index()
     )
-    df_logs.set_index("date", inplace=True)
-    df_logs.sort_index(inplace=True)
     df_logs.to_csv(output_dir / "logs.csv")
 
-    # ────── Save equity curve ──────
+    # Equity curve + drawdown visualization
     if plot_equity and equity_curve is not None and not equity_curve.empty:
         equity_curve.to_csv(output_dir / "equity_curve.csv", header=["equity"])
 
-        plt.figure(figsize=(10, 5))
-        equity_curve.plot(title="Equity Curve")
+        df_plot = pd.DataFrame({"equity": equity_curve})
+        df_plot["cum_return"] = df_plot["equity"] / df_plot["equity"].iloc[0]
+        df_plot["rolling_max"] = df_plot["cum_return"].cummax()
+        df_plot["drawdown"] = df_plot["cum_return"] / df_plot["rolling_max"] - 1
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(
+            df_plot.index, df_plot["cum_return"], label="Equity Curve", linewidth=2
+        )
+        plt.fill_between(
+            df_plot.index,
+            df_plot["drawdown"],
+            0,
+            color="red",
+            alpha=0.3,
+            label="Drawdown",
+        )
+        plt.title(f"Equity Curve & Drawdowns — {config.run_id}")
         plt.xlabel("Date")
-        plt.ylabel("Equity ($)")
+        plt.ylabel("Cumulative Return")
+        plt.legend()
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+        plt.xticks(rotation=45)
         plt.tight_layout()
         plt.savefig(output_dir / "equity_curve.png")
         plt.close()
 
-    # ────── Save config.yaml ──────
+    # Config and metadata
     _dump_config_yaml(config, output_dir / "config.yaml")
-
-    # ────── Save metrics + metadata ──────
     metadata = _extract_config_metadata(config)
     with open(output_dir / "metrics.json", "w") as f:
-        json.dump({"metrics": metrics.summary, "metadata": metadata}, f, indent=4)
+        json.dump(
+            _convert_numpy({"metrics": metrics.summary, "metadata": metadata}),
+            f,
+            indent=4,
+        )
+
+
+# ────── Internal Utilities ──────
 
 
 def _dump_config_yaml(config: BacktestConfig, path: Path) -> None:
-    """Dump the full config as a human-readable YAML file."""
-
     def _to_dict(obj: Any) -> Any:
         if isinstance(obj, list):
             return [_to_dict(i) for i in obj]
         elif hasattr(obj, "__dict__"):
             return {k: _to_dict(v) for k, v in obj.__dict__.items()}
-        else:
-            return obj
+        return obj
 
     with open(path, "w") as f:
-        yaml.safe_dump(_to_dict(config), f, sort_keys=False)
+        yaml.safe_dump(_convert_numpy(_to_dict(config)), f, sort_keys=False)
 
 
 def _extract_config_metadata(config: BacktestConfig) -> Dict[str, Any]:
-    """Extract summary metadata from BacktestConfig for audit logging."""
-
     def safe_params(model_config: Any) -> Dict[str, Any]:
         return model_config.params if isinstance(model_config.params, dict) else {}
 
@@ -107,16 +133,27 @@ def _extract_config_metadata(config: BacktestConfig) -> Dict[str, Any]:
     }
 
 
-# ────── YAML Utility Functions ──────
+def _convert_numpy(obj: Any) -> Any:
+    """Recursively convert NumPy types to native Python types."""
+    if isinstance(obj, dict):
+        return {k: _convert_numpy(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_convert_numpy(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return obj
+
+
+# ────── Public YAML I/O ──────
 
 
 def load_yaml(path: Union[str, Path]) -> Dict[str, Any]:
-    """Load a YAML file and return a Python dictionary."""
+    """Load a YAML file as a Python dictionary."""
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
 def save_yaml(config: Dict[str, Any], path: Union[str, Path]) -> None:
-    """Save a Python dictionary to a YAML file."""
+    """Save a Python dictionary to YAML, converting NumPy types if needed."""
     with open(path, "w") as f:
-        yaml.safe_dump(config, f, sort_keys=False)
+        yaml.safe_dump(_convert_numpy(config), f, sort_keys=False)

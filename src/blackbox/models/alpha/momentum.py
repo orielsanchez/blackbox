@@ -104,7 +104,7 @@ class MomentumAlphaModel(AlphaModel):
         normalized = normalize_signal(score)
 
         if self.verbose:
-            self.logger.info(
+            self.logger.debug(
                 f"{date} | Momentum signal stats: mean={normalized.mean():.3f}, std={normalized.std():.3f}"
             )
 

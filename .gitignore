@@ -36,6 +36,7 @@ data
 results
 runs
 backtests
+tmp
 db
 *.csv
 *.parquet

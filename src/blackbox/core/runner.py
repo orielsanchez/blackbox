@@ -1,5 +1,5 @@
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 from rich.table import Table
@@ -30,48 +30,42 @@ def run_backtest(
     plot_equity: bool = False,
     output_dir: Path = Path(),
 ) -> None:
-    # Load config and logger
     config: BacktestConfig = load_config(config_path)
+
+    if not getattr(config, "run_id", None):
+        config.run_id = f"run_{datetime.now():%Y%m%d_%H%M%S}"
+
+    if output_dir == Path():
+        output_dir = Path("backtests") / config.run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     logger = RichLogger(level=config.log_level)
     logger.info(f"📄 Loaded config from {config_path}")
 
-    # Build models from config
     models = build_models(config)
-
-    # Load universe symbols
     universe = pd.read_csv(config.universe_file)["symbol"].tolist()
 
-    # Refresh OHLCV data if requested
-
-    # Optionally refresh OHLCV data
     if refresh_data:
         logger.info("🌐 Refreshing OHLCV data from Polygon...")
-        updater = PolygonOHLCVUpdater(
+        PolygonOHLCVUpdater(
             db_path=config.data.db_path,
             table="daily_data",
-            universe_path=config.universe_file,  # Use universe_file path if needed
-        )
-        # The existing run() method loads universe internally, uses internal date ranges
-        updater.run()
+            universe_path=config.universe_file,
+        ).run()
 
-    # Collect feature specs from models
     feature_specs = collect_all_feature_specs(config)
-    force_reload_features = not use_cached_features
-
-    # Load or generate prepared data bundle (includes OHLCV and feature matrix)
     data = prepare_data_bundle(
         data_config=config.data,
         feature_specs=feature_specs,
         universe=universe,
         run_id=config.run_id,
-        force_reload=force_reload_features,
+        force_reload=not use_cached_features,
         config_start_date=config.start_date,
         config_end_date=config.end_date,
         logger=logger,
         output_dir=output_dir,
     )
 
-    # Create runtime strategy context
     context = StrategyContext(
         config=config,
         logger=logger,
@@ -80,20 +74,13 @@ def run_backtest(
         initial_equity=config.initial_portfolio_value,
     )
 
-    # Run backtest loop
-
-    # Trim snapshots and feature matrix to match config start/end
-    start = pd.to_datetime(config.start_date)
-    end = pd.to_datetime(config.end_date)
-
+    # Trim to backtest range
+    start, end = pd.to_datetime(config.start_date), pd.to_datetime(config.end_date)
     filtered_snapshots = [s for s in data.snapshots if start <= s.date <= end]
-
-    feature_matrix = data.feature_matrix
-    feature_matrix = feature_matrix.loc[
-        (feature_matrix.index.get_level_values("date") >= start)
-        & (feature_matrix.index.get_level_values("date") <= end)
+    feature_matrix = data.feature_matrix.loc[
+        (data.feature_matrix.index.get_level_values("date") >= start)
+        & (data.feature_matrix.index.get_level_values("date") <= end)
     ]
-
     valid_dates = [d for d in data.metadata.dates if start <= d <= end]
 
     data = PreparedDataBundle(
@@ -107,9 +94,10 @@ def run_backtest(
         ),
     )
 
-    logs = run_backtest_loop(context, data, output_dir)
+    # 🧠 Run core loop
+    logs, trade_records = run_backtest_loop(context, data)
 
-    # Compute performance metrics
+    # 📊 Compute metrics
     metrics_calculator = PerformanceMetrics(
         initial_value=config.initial_portfolio_value,
         risk_free_rate=config.risk_free_rate,
@@ -117,64 +105,33 @@ def run_backtest(
     metrics_dict, equity_curve = metrics_calculator.compute_metrics(
         pd.DataFrame([log.__dict__ for log in logs]), return_equity=True
     )
-
-    # Save IC timeseries and plot
-    df_logs = pd.DataFrame([log.__dict__ for log in logs])
-    df_logs.set_index("date", inplace=True)
-    df_logs.sort_index(inplace=True)
-
-    ic_series = df_logs["ic"].dropna()
-    if not ic_series.empty:
-        ic_csv_path = output_dir / "ic_timeseries.csv"
-        ic_plot_path = output_dir / "ic_plot.png"
-
-        ic_series.to_csv(ic_csv_path)
-        logger.info(f"📄 Saved IC timeseries to {ic_csv_path}")
-
-        import matplotlib.pyplot as plt
-
-        plt.figure(figsize=(10, 4))
-        ic_series.plot(title="Daily Information Coefficient (IC)")
-        plt.axhline(0, color="gray", linestyle="--", linewidth=1)
-        plt.ylabel("IC")
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(ic_plot_path)
-        plt.close()
-
-        logger.info(f"📈 Saved IC plot to {ic_plot_path}")
-
-    assert isinstance(equity_curve, pd.Series), "equity_curve must be a pandas Series"
-
     metrics = BacktestMetrics(summary=metrics_dict, equity_curve=equity_curve)
 
-    if plot_equity:
-        from blackbox.utils.plotting import plot_equity_curve
-
-        plot_equity_curve(
-            logs=logs,
-            run_id=config.run_id,
-            output_dir=output_dir,
-            logger=logger,
-        )
-
-    table = Table(title="Backtest Summary", show_edge=True, header_style="bold cyan")
-    table.add_column("Metric", style="dim", no_wrap=True)
-    table.add_column("Value", justify="right")
-
-    for key, value in metrics.summary.items():
-        value_str = f"{value:,.4f}" if isinstance(value, float) else str(value)
-        table.add_row(key.replace("_", " ").title(), value_str)
-
-    logger.console.print(table)
-
+    # 💾 Write all results (logs, trades, equity, metrics, config)
     write_results(
-        logs,
-        metrics,
-        config,
-        output_dir,
+        logs=logs,
+        metrics=metrics,
+        config=config,
+        output_dir=output_dir,
         equity_curve=equity_curve,
         plot_equity=plot_equity,
     )
+
+    # 🧾 Optionally write trades.csv
+    if trade_records:
+        trades_path = output_dir / "trades.csv"
+        df_trades = pd.DataFrame(trade_records)
+        df_trades.sort_values(by=["date", "symbol"], inplace=True)
+        df_trades.to_csv(trades_path, index=False)
+        logger.info(f"📄 Saved trades to {trades_path}")
+
+    # 📋 Summary table
+    table = Table(title="Backtest Summary", show_edge=True, header_style="bold cyan")
+    table.add_column("Metric", style="dim", no_wrap=True)
+    table.add_column("Value", justify="right")
+    for key, value in metrics.summary.items():
+        value_str = f"{value:,.4f}" if isinstance(value, float) else str(value)
+        table.add_row(key.replace("_", " ").title(), value_str)
+    logger.console.print(table)
 
     logger.info(f"🏁 Backtest complete — results saved to {output_dir}")

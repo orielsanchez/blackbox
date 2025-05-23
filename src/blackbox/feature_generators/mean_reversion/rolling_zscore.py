@@ -13,7 +13,7 @@ class RollingZScoreFeature(BaseFeatureGenerator):
             period: Number of periods for the rolling window.
         """
         super().__init__()
-        self.period = period
+        self.period = int(period)
 
     def generate(self, data: pd.DataFrame) -> pd.DataFrame:
         if "close" not in data.columns:

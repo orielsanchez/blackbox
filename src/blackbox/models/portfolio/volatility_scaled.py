@@ -171,7 +171,7 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
 
         if turnover > self.max_turnover:
             scale = self.max_turnover / turnover
-            self.logger.warning(
+            self.logger.debug(
                 f"⚠️ Turnover {turnover:.4f} > max {self.max_turnover:.4f}, scaling by {scale:.4f}"
             )
             weights *= scale
@@ -181,7 +181,7 @@ class VolatilityScaledPortfolio(PortfolioConstructionModel):
         num_trades = (trades > 1e-6).sum()
 
         if num_trades > self.max_trades_per_day:
-            self.logger.warning(
+            self.logger.debug(
                 f"⚠️ {num_trades} trades exceeds max {self.max_trades_per_day}, keeping largest"
             )
             keep = (
