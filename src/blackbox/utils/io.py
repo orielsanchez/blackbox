@@ -50,21 +50,12 @@ def write_results(
         df_plot = pd.DataFrame({"equity": equity_curve})
         df_plot["cum_return"] = df_plot["equity"] / df_plot["equity"].iloc[0]
         df_plot["rolling_max"] = df_plot["cum_return"].cummax()
-        df_plot["drawdown"] = df_plot["cum_return"] / df_plot["rolling_max"] - 1
 
         plt.figure(figsize=(12, 6))
         plt.plot(
             df_plot.index, df_plot["cum_return"], label="Equity Curve", linewidth=2
         )
-        plt.fill_between(
-            df_plot.index,
-            df_plot["drawdown"],
-            0,
-            color="red",
-            alpha=0.3,
-            label="Drawdown",
-        )
-        plt.title(f"Equity Curve & Drawdowns — {config.run_id}")
+        plt.title(f"Equity Curve — {config.run_id}")
         plt.xlabel("Date")
         plt.ylabel("Cumulative Return")
         plt.legend()

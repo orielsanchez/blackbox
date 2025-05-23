@@ -27,7 +27,7 @@ def run_backtest(
     config_path: str,
     use_cached_features: bool = True,
     refresh_data: bool = False,
-    plot_equity: bool = False,
+    plot_equity: bool = True,
     output_dir: Path = Path(),
 ) -> None:
     config: BacktestConfig = load_config(config_path)

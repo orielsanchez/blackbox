@@ -51,7 +51,11 @@ class OptunaTuner(Tuner):
             )
 
             try:
-                run_backtest(str(trial_config_path), use_cached_features=True)
+                run_backtest(
+                    str(trial_config_path),
+                    use_cached_features=True,
+                    output_dir=results_dir / run_id,
+                )
                 metrics = load_metrics_for_run(run_id)
                 score = self._extract_metric(metrics, metric)
                 return score

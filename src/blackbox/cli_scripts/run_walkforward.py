@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib
@@ -51,6 +52,10 @@ def main():
     )
     args = parser.parse_args()
 
+    run_ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")  # e.g. 2025-05-22T20-58-31
+    session_root = Path("backtests") / run_ts
+    session_root.mkdir(parents=True, exist_ok=True)
+
     # ────── Load config and logger ──────
     config_path = Path(args.config)
     config = load_config(config_path)
@@ -84,9 +89,10 @@ def main():
     runner = TunedWalkforwardRunner(
         base_config_path=str(config_path),
         tuner=tuner,
-        train_days=252,
+        train_days=60,
         test_days=63,
-        output_dir="tmp/tuned_walkforward_configs",
+        output_dir=session_root,
+        metric="Sharpe Ratio",
     )
     results = runner.run()
 
@@ -104,7 +110,7 @@ def main():
     # ────── Optional Plot ──────
     if args.plot:
         print("\n📈 Generating walkforward equity curve vs SPY...")
-        test_curves = load_all_test_curves("backtests")
+        test_curves = load_all_test_curves(session_root)
         start_date = test_curves["date"].min()
         end_date = test_curves["date"].max()
 
@@ -116,7 +122,7 @@ def main():
         )
 
         spy = load_spy_benchmark("data/spy.csv", start_date, end_date)
-        plot_combined_equity_curve(test_curves, spy)
+        plot_combined_equity_curve(test_curves, spy, session_root)
 
 
 if __name__ == "__main__":
