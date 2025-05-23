@@ -1,6 +1,6 @@
 from typing import Any, List
 
-from blackbox.core.types.context import BacktestConfig, FeatureSpec, ModelConfig
+from blackbox.core.types.dataclasses import BacktestConfig, FeatureSpec, ModelConfig
 
 
 def extract_features_from_model(model: Any) -> List[FeatureSpec]:
@@ -13,9 +13,7 @@ def extract_features_from_model(model: Any) -> List[FeatureSpec]:
         if "features" in params and isinstance(params["features"], list):
             for f in params["features"]:
                 if isinstance(f, dict):
-                    specs.append(
-                        FeatureSpec(name=f["name"], params=f.get("params", {}))
-                    )
+                    specs.append(FeatureSpec(name=f["name"], params=f.get("params", {})))
                 elif isinstance(f, FeatureSpec):
                     specs.append(f)
 

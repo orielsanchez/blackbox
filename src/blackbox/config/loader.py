@@ -5,7 +5,7 @@ from typing import Any, Dict, Union
 import yaml
 from dacite import from_dict
 
-from blackbox.core.types.context import BacktestConfig
+from blackbox.core.types.dataclasses import BacktestConfig
 
 
 def load_config(path: Union[str, Path]) -> BacktestConfig:

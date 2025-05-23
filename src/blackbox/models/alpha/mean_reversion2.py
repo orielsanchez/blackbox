@@ -8,8 +8,6 @@ from blackbox.utils.signals import normalize_signal
 
 
 class MeanReversionAlphaModel(AlphaModel):
-    """Mean reversion alpha model using composite features filtered by RSI."""
-
     def __init__(
         self,
         threshold: float = 0.5,
@@ -28,32 +26,27 @@ class MeanReversionAlphaModel(AlphaModel):
         return "mean_reversion2"
 
     def predict(self, features: pd.DataFrame) -> pd.Series:
-        if not isinstance(features.index, pd.MultiIndex):
-            raise ValueError("Expected MultiIndex [date, symbol]")
-
-        if features.index.names != ["date", "symbol"]:
-            raise ValueError(
-                f"Expected index names ['date', 'symbol'], got {features.index.names}"
-            )
+        if not isinstance(features.index, pd.MultiIndex) or features.index.names != [
+            "date",
+            "symbol",
+        ]:
+            raise ValueError("Expected MultiIndex with names ['date', 'symbol']")
 
         if not features.index.is_monotonic_increasing:
             self.logger.warning("⚠️ Feature index not sorted. Sorting now.")
             features = features.sort_index()
 
-        date = features.index.get_level_values("date").unique()
-        if len(date) != 1:
-            raise ValueError(f"Expected single date, got {date.tolist()}")
-        date = date[0]
+        dates = features.index.get_level_values("date").unique()
+        if len(dates) != 1:
+            raise ValueError(f"Expected a single date. Got: {dates.tolist()}")
+        date = dates[0]
+
         if self.verbose:
             self.logger.info(f"📅 Processing alpha for {date}")
 
         all_symbols = features.index.get_level_values("symbol").unique()
-        symbols = (
-            all_symbols.intersection(self.universe) if self.universe else all_symbols
-        )
-        full_index = pd.MultiIndex.from_product(
-            [[date], symbols], names=["date", "symbol"]
-        )
+        symbols = all_symbols.intersection(self.universe) if self.universe else all_symbols
+        full_index = pd.MultiIndex.from_product([[date], symbols], names=["date", "symbol"])
 
         if features.empty or symbols.empty:
             self.logger.warning(f"{date} | ⚠️ No symbols or features after filtering")
@@ -61,7 +54,7 @@ class MeanReversionAlphaModel(AlphaModel):
 
         features_today = features.loc[pd.IndexSlice[date, symbols], :]
 
-        # Extract feature columns
+        # Dynamically select and compose signals
         rsi_col = None
         signal_parts = []
 
@@ -69,54 +62,47 @@ class MeanReversionAlphaModel(AlphaModel):
             name = f["name"]
             params = f.get("params", {})
             period = params.get("period", 14 if name == "rsi" else 20)
-            col = f"{name}_{period}"
+            output = params.get("output")  # Optional override
+            col = output or f"{name}_{period}"
+
+            if col not in features_today:
+                self.logger.debug(f"{date} | Skipping missing feature column: {col}")
+                continue
 
             if name == "rsi":
-                if col in features_today:
-                    rsi_col = col
+                rsi_col = col
             else:
-                if col in features_today:
-                    # Invert zscore-type signals for mean-reversion
-                    if "zscore" in name:
-                        signal_parts.append(-features_today[col])
-                    else:
-                        signal_parts.append(features_today[col])
+                signal_part = -features_today[col] if "zscore" in name else features_today[col]
+                signal_parts.append(signal_part)
 
-        if not rsi_col or not signal_parts:
-            self.logger.warning(f"{date} | ⚠️ Missing RSI or signal features")
+        if not signal_parts:
+            self.logger.warning(f"{date} | ❌ No usable signal features found.")
             return pd.Series(0.0, index=full_index, name="mean_reversion_signal")
 
-        # Compute composite raw score
         raw_score = sum(signal_parts) / len(signal_parts)
-        rsi = features_today[rsi_col]
-        mask = (rsi < 30) | (rsi > 70)
 
-        filtered = raw_score.where(mask, 0.0).dropna()
+        if rsi_col and rsi_col in features_today:
+            rsi = features_today[rsi_col]
+            raw_score = raw_score.where((rsi < 30) | (rsi > 70), 0.0)
 
-        # Normalize + top-N filter
-        normalized = normalize_signal(filtered)
-        top_n = 50
-        normalized = normalized.loc[
-            normalized.abs().sort_values(ascending=False).head(top_n).index
-        ]
+        raw_score = raw_score.dropna()
 
-        # Apply threshold
+        if raw_score.empty or raw_score.std() == 0:
+            self.logger.warning(f"{date} | ⚠️ Signal degenerate — empty or zero std")
+            return pd.Series(0.0, index=full_index, name="mean_reversion_signal")
+
+        normalized = normalize_signal(raw_score)
+
+        strong = normalized[normalized.abs() >= self.threshold]
+
         self.logger.info(
-            f"{date} | Signal stats: mean={normalized.mean():.3f}, std={normalized.std():.3f}, max={normalized.max():.3f}"
+            f"{date} | Signal stats: mean={normalized.mean():.4f}, std={normalized.std():.4f}, n_strong={len(strong)}"
         )
-        strong_signals = normalized[normalized.abs() >= self.threshold]
 
-        if self.verbose:
-            self.logger.debug(
-                f"{date} | {len(strong_signals)} signals passed threshold"
-            )
-            if not strong_signals.empty:
-                buys = strong_signals.sort_values().head(3)
-                sells = strong_signals.sort_values(ascending=False).head(3)
-                self.logger.info(f"{date} | Top buys: {buys.to_dict()}")
-                self.logger.info(f"{date} | Top sells: {sells.to_dict()}")
+        if self.verbose and not strong.empty:
+            self.logger.info(f"{date} | Top buys: {strong.nsmallest(3).to_dict()}")
+            self.logger.info(f"{date} | Top sells: {strong.nlargest(3).to_dict()}")
 
-        # Output full signal vector
-        signals = pd.Series(0.0, index=full_index, name="mean_reversion_signal")
-        signals.loc[strong_signals.index] = strong_signals
-        return signals
+        signal_out = pd.Series(0.0, index=full_index, name="mean_reversion_signal")
+        signal_out.loc[strong.index] = strong
+        return signal_out

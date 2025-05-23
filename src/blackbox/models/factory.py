@@ -1,8 +1,8 @@
 import inspect
 from typing import Any, Dict, Type, TypeVar
 
-from blackbox.config.loader import BacktestConfig
-from blackbox.core.types.context import ModelConfig, StrategyModels
+from blackbox.core.types.context import StrategyModels
+from blackbox.core.types.dataclasses import BacktestConfig, ModelConfig
 from blackbox.models.interfaces import (
     AlphaModel,
     ExecutionModel,
@@ -19,17 +19,13 @@ def build_models(config: BacktestConfig) -> StrategyModels:
     return StrategyModels(
         alpha=_build_model("blackbox.models.alpha", AlphaModel, config.alpha_model),
         risk=_build_model("blackbox.models.risk", RiskModel, config.risk_model),
-        cost=_build_model(
-            "blackbox.models.cost", TransactionCostModel, config.tx_cost_model
-        ),
+        cost=_build_model("blackbox.models.cost", TransactionCostModel, config.tx_cost_model),
         portfolio=_build_model(
             "blackbox.models.portfolio",
             PortfolioConstructionModel,
             config.portfolio_model,
         ),
-        execution=_build_model(
-            "blackbox.models.execution", ExecutionModel, config.execution_model
-        ),
+        execution=_build_model("blackbox.models.execution", ExecutionModel, config.execution_model),
     )
 
 

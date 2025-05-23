@@ -1,18 +1,16 @@
-# src/blackbox/core/context.py
-
 from contextlib import contextmanager
 from copy import deepcopy
 from typing import Any
 
 import pandas as pd
 
-from blackbox.utils.logger import RichLogger
+from blackbox.utils.rich_logger import RichLogger
 
 _context: dict[str, Any] = {}
+_feature_matrix: pd.DataFrame | None = None
 
 
 def set_value(key: str, value: Any):
-    """Register a shared dependency globally."""
     _context[key] = value
 
 
@@ -50,9 +48,6 @@ def scoped_context(overrides: dict[str, Any]):
     finally:
         _context.clear()
         _context.update(original)
-
-
-_feature_matrix = None
 
 
 def set_feature_matrix(matrix: pd.DataFrame):

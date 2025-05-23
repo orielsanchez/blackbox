@@ -1,4 +1,6 @@
-from typing import Union
+import json
+from pathlib import Path
+from typing import Any, Dict, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,9 +23,7 @@ class PerformanceMetrics:
             history["date"] = pd.to_datetime(history["date"])
             history.set_index("date", inplace=True)
         if not isinstance(history.index, pd.DatetimeIndex):
-            raise ValueError(
-                "Backtest history must have a DatetimeIndex or 'date' column."
-            )
+            raise ValueError("Backtest history must have a DatetimeIndex or 'date' column.")
 
         equity = self._compute_equity_curve(history)
         returns = equity.pct_change().fillna(0)
@@ -40,9 +40,7 @@ class PerformanceMetrics:
         r_squared = self._compute_r_squared(equity)
         sortino_ratio = self._sortino_ratio(returns)
         max_drawdown = self._max_drawdown(equity)
-        calmar_ratio = (
-            annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
-        )
+        calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
 
         start_date = str(equity.index.min().date())
         end_date = str(equity.index.max().date())
@@ -115,3 +113,24 @@ class PerformanceMetrics:
         y = equity.values.reshape(-1, 1)
         model = LinearRegression().fit(X, y)
         return float(model.score(X, y))
+
+
+def load_metrics_for_run(run_id: str, base_dir: Path = Path("backtests")) -> Dict[str, Any]:
+    """
+    Loads metrics.json from a previous backtest run directory.
+
+    Args:
+        run_id (str): Unique ID of the run, e.g. "tune_rsi-14_threshold-0.3"
+        base_dir (Path): Where all backtest results are stored.
+
+    Returns:
+        dict: Dictionary of metrics like sharpe, return, drawdown, IC, etc.
+    """
+    metrics_path = base_dir / run_id / "metrics.json"
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"No metrics.json found at: {metrics_path}")
+
+    with open(metrics_path, "r") as f:
+        metrics = json.load(f)
+
+    return metrics

@@ -9,7 +9,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from blackbox.core.types.context import FeatureSpec
+from blackbox.core.types.dataclasses import FeatureSpec
 from blackbox.feature_generators.pipeline import FeaturePipeline
 from blackbox.utils.context import get_logger
 
@@ -101,14 +101,10 @@ class FeatureMatrixGenerator:
 
                 if daily_features.empty:
                     missing_dates += 1
-                    self.logger.warning(
-                        f"{date.date()} | ⚠️ No features found for this date"
-                    )
+                    self.logger.warning(f"{date.date()} | ⚠️ No features found for this date")
                     continue
 
-                valid_symbols = daily_features.index.get_level_values(
-                    "symbol"
-                ).nunique()
+                valid_symbols = daily_features.index.get_level_values("symbol").nunique()
                 self.logger.debug(
                     f"{date.date()} | ✅ Valid symbols: {valid_symbols} / {total_symbols}"
                 )
@@ -116,17 +112,13 @@ class FeatureMatrixGenerator:
                 feature_frames.append(daily_features)
 
         if skipped_dates > 0 and start_date:
-            self.logger.info(
-                f"⏩ Skipped {skipped_dates} dates before {start_date.date()}"
-            )
+            self.logger.info(f"⏩ Skipped {skipped_dates} dates before {start_date.date()}")
         if warmup_dates > 0:
             self.logger.info(
                 f"⏳ Skipped {warmup_dates} dates in warmup period (before {earliest_feature_date.date()})"
             )
         if missing_dates > 0:
-            self.logger.warning(
-                f"⚠️ Missing features for {missing_dates} dates after warmup period"
-            )
+            self.logger.warning(f"⚠️ Missing features for {missing_dates} dates after warmup period")
 
         if not feature_frames:
             msg = "❌ No feature frames generated — check data or feature pipeline."
@@ -135,10 +127,7 @@ class FeatureMatrixGenerator:
 
         result = pd.concat(feature_frames).sort_index()
         result.index = pd.MultiIndex.from_tuples(
-            [
-                (pd.to_datetime(date).normalize(), symbol)
-                for date, symbol in result.index
-            ],
+            [(pd.to_datetime(date).normalize(), symbol) for date, symbol in result.index],
             names=["date", "symbol"],
         )
         return result

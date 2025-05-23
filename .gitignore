@@ -35,6 +35,7 @@ build/
 data
 results
 runs
+backtests
 db
 *.csv
 *.parquet

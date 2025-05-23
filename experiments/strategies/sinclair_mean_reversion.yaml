@@ -2,7 +2,7 @@
 run_id: mean_reversion  # Unique ID for this backtest run
 start_date: '2024-05-03'  # Inclusive backtest start date
 end_date: '2025-05-02'    # Inclusive backtest end date
-universe_file: universe/top_500_by_volume.csv  # CSV of tickers to include
+universe_file: universe/sp100.csv  # CSV of tickers to include
 
 verbose: false  # Set true to enable more detailed logs
 

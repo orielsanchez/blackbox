@@ -1,0 +1,3 @@
+mean_reversion__zscore_period: [5, 10, 20]
+mean_reversion__vol_span: [5, 10, 20]
+mean_reversion__threshold: [0.3, 0.4, 0.5]

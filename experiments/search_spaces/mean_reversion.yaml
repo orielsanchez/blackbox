@@ -1,0 +1,5 @@
+mean_reversion__rsi_period: [10, 14, 20]
+mean_reversion__zscore_period: [5, 10]
+mean_reversion__boll_stddev: [1.0, 2.0]
+mean_reversion__threshold: [0.2, 0.3]
+
